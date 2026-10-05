@@ -77,3 +77,17 @@ select {
 #form[data-state="within"] { border-color: #22d3ee; }
 #form[data-state="pending"] { border-color: #facc15; }
 .hint { color: #cbd5e1; font-size: 14px; line-height: 1.5; }
+
+.angle-chart {
+  padding: 16px 8px;
+  margin: 20px 0;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 12px;
+}
+.angle-chart h2 { font-size: 18px; margin: 0 0 12px; }
+#angle-graph { display: block; width: 100%; height: 240px; }
+
+.video-input { border: 1px solid #334155; border-radius: 12px; padding: 12px; }
+#video-file { max-width: 100%; margin: 10px 0; }
+#video-name { overflow-wrap: anywhere; }
