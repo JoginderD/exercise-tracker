@@ -259,3 +259,99 @@ select {
   border: 1px solid #334155;
 }
 .toggle-group button[aria-pressed="true"] { background: #2563eb; border-color: #2563eb; }
+
+/* Account bar, account pages and the session tables share the panel look of .settings. */
+.account-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 16px;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  font-size: 14px;
+  text-align: left;
+}
+.account-who { color: #cbd5e1; }
+.account-links { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.account-links button { margin: 0; }
+.nav-link {
+  display: inline-block;
+  padding: 8px 14px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #1f2937;
+  color: white;
+  font-size: 15px;
+  text-decoration: none;
+}
+.nav-link[aria-current="page"] { background: #2563eb; border-color: #2563eb; }
+button.secondary { padding: 8px 14px; font-size: 15px; background: #1f2937; border: 1px solid #334155; }
+.link-button { padding: 0; margin: 0; background: none; color: #93c5fd; font-size: inherit; text-decoration: underline; }
+a { color: #93c5fd; }
+
+.panel {
+  padding: 16px;
+  margin: 0 0 20px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  text-align: left;
+}
+.panel h2 { font-size: 18px; margin: 0 0 12px; }
+.panel-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.panel-header h2 { margin: 0; }
+
+.auth-form { max-width: 420px; margin: 0 auto 20px; }
+.auth-form label { display: block; margin: 12px 0 0; }
+.auth-form input:not([type="radio"]),
+.inline-form input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px;
+  font-size: 16px;
+  color: white;
+  background: #111827;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+.auth-form button[type="submit"] { width: 100%; margin: 16px 0 0; }
+.role-choice { margin: 0; padding: 8px 12px; border: 1px solid #334155; border-radius: 8px; }
+.role-choice label { display: inline-block; margin: 4px 12px 4px 0; }
+.inline-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.inline-form input { flex: 1 1 180px; width: auto; margin: 0; }
+.inline-form button { margin: 0; }
+
+.form-message:empty { display: none; }
+.form-message[data-state="error"], .save-status[data-state="warning"] { color: #fed7aa; }
+.form-message[data-state="warning"] { color: #fde68a; }
+.form-message[data-state="within"], .save-status[data-state="within"] { color: #a5f3fc; }
+
+.item-list { list-style: none; padding: 0; margin: 0; }
+.item-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #1f2937;
+}
+.item-list button { margin: 0; }
+
+.coach-code { margin: 8px 0; font-family: ui-monospace, Menlo, monospace; font-size: 28px; letter-spacing: 0.08em; }
+
+/* Wide tables scroll inside their panel on phones instead of widening the page. */
+.table-wrap { overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.data-table th, .data-table td { padding: 8px; border-bottom: 1px solid #1f2937; text-align: left; white-space: nowrap; }
+.data-table th { color: #cbd5e1; font-weight: normal; }
+.data-table .number { text-align: right; }
+.detail-row td { white-space: normal; background: #111827; }
+.session-detail h4 { margin: 8px 0 4px; font-size: 14px; }
+.rep-log { margin: 0; padding-left: 20px; line-height: 1.6; }
+.rep-log li[data-state="warning"] { color: #fed7aa; }

@@ -1,7 +1,9 @@
 import './style.css'
+import { createAccount } from './account.js'
 import { createAngleGraph } from './angle-graph.js'
 import { exercises } from './exercises.js'
 import { bodyTurn, chooseSide, createTracker, createTurnGuide, hiddenJoints, measurePose } from './exercise-tracker.js'
+import { buildSessionRecord, newRunId } from './session-record.js'
 import { createMetricSmoother, createPointSmoother } from './smoothing.js'
 import {
   PoseLandmarker,
@@ -12,6 +14,9 @@ let exercise = exercises[0]
 let lanes = []
 
 document.querySelector('#app').innerHTML = `
+  <nav id="account-bar" class="account-bar" aria-label="Account"></nav>
+  <main id="account-view" hidden></main>
+  <div id="tracker-view">
   <h1 id="title">Exercise Tracker</h1>
   <p id="instructions"></p>
 
@@ -91,6 +96,8 @@ document.querySelector('#app').innerHTML = `
     <button id="start" disabled>Start Camera</button>
     <button id="stop" disabled>Stop Camera</button>
   </div>
+  <p id="save-status" class="hint save-status" role="status"></p>
+  </div>
 `
 
 const angleGraph = createAngleGraph(document.querySelector('#angle-graph'))
@@ -123,6 +130,13 @@ const stopButton = document.querySelector('#stop')
 const fileInput = document.querySelector('#video-file')
 const videoName = document.querySelector('#video-name')
 const replayButton = document.querySelector('#replay')
+const account = createAccount({
+  bar:document.querySelector('#account-bar'),
+  view:document.querySelector('#account-view'),
+  trackerView:document.querySelector('#tracker-view'),
+  saveStatus:document.querySelector('#save-status'),
+  onLeaveTracker:() => stopCamera(),
+})
 
 let model
 let vision
@@ -284,8 +298,30 @@ function clearMeasurements(message) {
 }
 
 let turnGuide
+// The run being recorded. Settings are captured when it begins, because the
+// controls already show the new values by the time the old run is finished.
+let run
+let leavingPage = false
+
+function beginRun() {
+  run = {
+    id:newRunId(), exercise, source:source === 'file' ? 'video' : 'camera',
+    side:sideSelect.value, angles:worldToggle.checked ? '3d' : '2d', startedAt:null, endedAt:null,
+  }
+}
+
+// Hands the run that is ending to the account for saving, then starts a fresh one.
+function finishRun() {
+  if (!run) return
+  if (run.startedAt) {
+    for (const lane of lanes) lane.tracker.resetSequence()
+    account.saveSession(buildSessionRecord({ ...run, lanes }), { leaving:leavingPage })
+  }
+  beginRun()
+}
 
 function resetRun() {
+  finishRun()
   lanes = createLanes()
   turnGuide = createTurnGuide(exercise.facing)
   renderTurn(null)
@@ -297,6 +333,7 @@ function resetRun() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   lastVideoTime = -1
   clearMeasurements(exercise.startCue)
+  beginRun()
 }
 
 function applyExercise() {
@@ -378,7 +415,9 @@ video.addEventListener('pause', () => {
   status.textContent = video.ended ? 'Video finished. Replay to start a new run.' : 'Video paused.'
 })
 video.addEventListener('ended', () => {
-  if (source === 'file') status.textContent = 'Video finished. Replay to start a new run.'
+  if (source !== 'file') return
+  status.textContent = 'Video finished. Replay to start a new run.'
+  finishRun()
 })
 video.addEventListener('seeking', () => {
   if (source === 'file') resetRun()
@@ -543,6 +582,10 @@ function trackPose() {
       const worldLandmarks = worldToggle.checked ? result.worldLandmarks[0] : undefined
       renderTurn(turnGuide.update(bodyTurn(result.worldLandmarks[0]) ?? bodyTurn(result.landmarks[0]), now))
       for (const lane of lanes) trackLane(lane, result.landmarks[0], worldLandmarks, now)
+      if (lanes.some(lane => lane.metrics)) {
+        run.startedAt ??= Date.now()
+        run.endedAt = Date.now()
+      }
       angleGraph.add(now, Object.fromEntries(lanes.map(lane => [lane.id, lane.metrics?.[exercise.rep.metric]])))
       renderMeasurements()
       renderForm()
@@ -578,6 +621,7 @@ function stopCamera() {
   }
   running = false
   cancelAnimationFrame(animationId)
+  finishRun()
   stream?.getTracks().forEach((track) => track.stop())
   stream = null
   video.srcObject = null
@@ -626,7 +670,8 @@ document.addEventListener('keydown', event => {
 })
 
 stopButton.addEventListener('click', stopCamera)
-window.addEventListener('pagehide', () => { stopCamera(); releaseFile() })
+window.addEventListener('pagehide', () => { leavingPage = true; stopCamera(); releaseFile() })
+window.addEventListener('pageshow', () => { leavingPage = false })
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     if (source === 'file') video.pause()

@@ -170,6 +170,8 @@ export function createTracker(profile) {
   let fastReps = 0
   let slowReps = 0
   let lastRep = null
+  // Every finished or partial rep, in order, for the saved session record.
+  const history = []
   let phase, heldPosition, positionSince, lastTime, repFlagged, rules
   let dwell, excursion, liftFrom, liftMs, unsettled
 
@@ -214,7 +216,9 @@ export function createTracker(profile) {
     const judged = tempo ? judgeTempo(unsettled.liftMs, lowerMs) : {verdict:null,messages:[]}
     if (judged.verdict === 'fast') fastReps++
     if (judged.verdict === 'slow') slowReps++
-    lastRep = {kind:'full',number:unsettled.number,liftMs:unsettled.liftMs,lowerMs,tempo:judged.verdict,messages:judged.messages}
+    lastRep = {kind:'full',number:unsettled.number,liftMs:unsettled.liftMs,lowerMs,tempo:judged.verdict,
+      flagged:unsettled.flagged,messages:judged.messages}
+    history.push(lastRep)
     unsettled = null
   }
 
@@ -222,6 +226,7 @@ export function createTracker(profile) {
     partialReps++
     lastRep = {kind:'partial',missed:trip.from === 'start' ? 'target' : 'start',
       reached:rep.direction === 'increasing' ? trip.peak : -trip.peak,messages:[message]}
+    history.push(lastRep)
   }
 
   resetSequence()
@@ -301,7 +306,7 @@ export function createTracker(profile) {
       } else if (phase === 'returning' && position === 'start') {
         reps++
         if (repFlagged) flaggedReps++
-        unsettled = {number:reps,liftMs,lowerFrom:excursion.leftAt}
+        unsettled = {number:reps,liftMs,lowerFrom:excursion.leftAt,flagged:repFlagged}
         phase = 'ready'
         repFlagged = messages.length > 0
         excursion = null
@@ -317,5 +322,9 @@ export function createTracker(profile) {
     }
     return summary(messages.length ? 'warning' : pending ? 'pending' : unchecked ? 'unassessable' : 'within', messages, tempoMessage)
   }
-  return {update,resetSequence}
+  // Totals and the rep log so far; call resetSequence first to settle a just-finished rep.
+  function report() {
+    return {reps,flaggedReps,partialReps,fastReps,slowReps,history:history.slice()}
+  }
+  return {update,resetSequence,report}
 }
