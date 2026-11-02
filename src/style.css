@@ -39,13 +39,170 @@ button:disabled {
 }
 
 .camera-container {
-  position: relative;
   margin: 20px 0;
 }
 
-.camera-container video {
+/* The stage has the video's shape (--aspect is set from the stream), so the
+   pose overlay and HUD sit exactly on the picture. */
+.stage {
+  --aspect: 1.7778;
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--aspect);
+  margin: auto;
+  container-type: inline-size;
+  border-radius: 12px;
+  overflow: hidden;
+  background: black;
+}
+
+.stage video {
+  width: 100%;
+  height: 100%;
   margin: 0;
   aspect-ratio: auto;
+  border-radius: 0;
+}
+
+.camera-container:fullscreen,
+.camera-container.immersive {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  background: black;
+}
+.camera-container:-webkit-full-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: black;
+}
+.camera-container.immersive {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+.camera-container:fullscreen .stage,
+.camera-container:-webkit-full-screen .stage,
+.camera-container.immersive .stage {
+  width: min(100vw, calc(100dvh * var(--aspect)));
+  border-radius: 0;
+}
+body.no-scroll { overflow: hidden; }
+
+/* Readouts over the video. Sizes follow the stage width (cqw), so they grow in full screen. */
+.hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-size: clamp(12px, 1.8cqw, 22px);
+  text-align: left;
+}
+.hud p { margin: 0; }
+.hud-top-left,
+.hud-stats,
+.hud-turn,
+.hud-message {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+.hud-top-left {
+  position: absolute;
+  top: 2cqw;
+  left: 2cqw;
+  max-width: 30%;
+  padding: 6px;
+  border: none;
+  background: none;
+}
+.hud-button {
+  pointer-events: auto;
+  margin: 0 0 6px;
+  padding: 6px 12px;
+  font-size: inherit;
+  background: rgba(37, 99, 235, 0.9);
+}
+.hud-status {
+  padding: 4px 8px;
+  color: #cbd5e1;
+  font-size: 0.8em;
+  background: rgba(15, 23, 42, 0.8);
+  border-radius: 6px;
+}
+.hud-stats {
+  position: absolute;
+  top: 2cqw;
+  right: 2cqw;
+  max-width: 38%;
+  padding: 8px 12px;
+  text-align: right;
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+.hud-label {
+  display: block;
+  color: #cbd5e1;
+  font-size: 0.8em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.hud-reps {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6em;
+  font-size: clamp(28px, 7cqw, 96px);
+  font-weight: bold;
+  line-height: 1.1;
+}
+.hud-rep { display: flex; flex-direction: column; align-items: center; }
+.hud-rep small {
+  color: #cbd5e1;
+  font-size: max(11px, 0.18em);
+  font-weight: normal;
+  letter-spacing: 0.04em;
+}
+.hud-details { margin-top: 4px; font-size: 0.85em; }
+.hud-turn {
+  max-width: 100%;
+  padding: 10px 16px;
+  color: #111827;
+  background: rgba(250, 204, 21, 0.95);
+  border-color: #facc15;
+  font-size: 1.4em;
+  font-weight: bold;
+  text-align: center;
+}
+.hud-turn[hidden] { display: none; }
+.hud-bottom {
+  position: absolute;
+  bottom: 2cqw;
+  left: 2cqw;
+  right: 2cqw;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+/* Leave room for the native playback bar when a local video is open. */
+.stage.has-controls .hud-bottom { bottom: max(56px, 2cqw); }
+.hud-message {
+  max-width: 100%;
+  padding: 8px 14px;
+  font-size: 1.1em;
+  text-align: center;
+}
+.hud-message:empty { display: none; }
+
+/* Small stage (phone, not full screen): keep reps and messages, drop the detail lines. */
+@container (max-width: 600px) {
+  .hud { font-size: 12px; }
+  .hud-details,
+  .hud-status { display: none; }
+  .hud-stats { padding: 4px 8px; }
+  .hud-message { padding: 4px 8px; font-size: 11px; }
+  .hud-turn { font-size: 13px; padding: 6px 10px; }
 }
 
 #overlay {
@@ -62,20 +219,16 @@ select {
   font-size: 16px;
 }
 
-#form {
-  padding: 14px;
-  border: 1px solid #94a3b8;
-  border-radius: 8px;
-}
 
-#form[data-state="warning"] {
+#form[data-state="warning"],
+#rep-feedback[data-state="warning"] {
   color: #fed7aa;
   background: #431407;
   border-color: #fb923c;
 }
 
-#form[data-state="within"] { border-color: #22d3ee; }
-#form[data-state="pending"] { border-color: #facc15; }
+#form[data-state="within"], #rep-feedback[data-state="within"] { border-color: #22d3ee; }
+#form[data-state="pending"], #rep-feedback[data-state="pending"] { border-color: #facc15; }
 .hint { color: #cbd5e1; font-size: 14px; line-height: 1.5; }
 
 .angle-chart {
@@ -91,3 +244,18 @@ select {
 .video-input { border: 1px solid #334155; border-radius: 12px; padding: 12px; }
 #video-file { max-width: 100%; margin: 10px 0; }
 #video-name { overflow-wrap: anywhere; }
+
+.settings { border: 1px solid #334155; border-radius: 12px; padding: 12px; margin-bottom: 20px; }
+.settings label { display: inline-block; margin: 4px 8px; }
+.settings input[type="checkbox"] { width: 18px; height: 18px; vertical-align: middle; }
+
+.exercise-picker { margin: 4px 8px 8px; }
+.toggle-group { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 6px; }
+.toggle-group button {
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 15px;
+  background: #1f2937;
+  border: 1px solid #334155;
+}
+.toggle-group button[aria-pressed="true"] { background: #2563eb; border-color: #2563eb; }

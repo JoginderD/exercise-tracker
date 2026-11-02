@@ -43,13 +43,21 @@ test('partial curls and brief threshold crossings do not count', () => {
   for (const [t,a] of [[0,160],[160,160],[200,60],[250,100],[400,160],[560,160]]) sample(tracker,a,0,t)
   assert.equal(sample(tracker,160,0,700).reps,0)
 })
-test('missing measurements discard unfinished repetitions', () => {
+test('long tracking loss discards unfinished repetitions', () => {
+  const tracker = createTracker(curl)
+  sample(tracker,160,0,0); sample(tracker,160,0,160)
+  sample(tracker,60,0,200); sample(tracker,60,0,360)
+  for (const t of [400,800,1200]) assert.equal(tracker.update(null,t).form,'unassessable')
+  sample(tracker,160,0,1400)
+  assert.equal(sample(tracker,160,0,1560).reps,0)
+})
+test('brief visibility flickers do not discard a rep in progress', () => {
   const tracker = createTracker(curl)
   sample(tracker,160,0,0); sample(tracker,160,0,160)
   sample(tracker,60,0,200); sample(tracker,60,0,360)
   assert.equal(tracker.update(null,400).form,'unassessable')
   sample(tracker,160,0,500)
-  assert.equal(sample(tracker,160,0,660).reps,0)
+  assert.equal(sample(tracker,160,0,660).reps,1)
 })
 test('long frame gaps cannot bridge an unfinished rep', () => {
   const tracker = createTracker(curl)
@@ -85,10 +93,27 @@ for (const side of ['left','right']) test(`${side} arm measures torso-relative a
   assert.equal(raised.metrics.upperArm,90)
   assert.equal(down.metrics.elbow,90)
 })
-test('hidden hip and nonfinite points are unassessable', () => {
+test('a hidden hip drops only the form metric; a hidden or nonfinite arm joint is unassessable', () => {
   const points = pose('left',false)
   points[23].visibility=.1
-  assert.equal(measurePose(points,'left',1280,720,curl),null)
+  assert.deepEqual(measurePose(points,'left',1280,720,curl).metrics,{elbow:90,upperArm:null})
   points[23].visibility=1; points[13].x=NaN
   assert.equal(measurePose(points,'left',1280,720,curl),null)
+  points[13].x=.5; points[15].visibility=.3
+  assert.equal(measurePose(points,'left',1280,720,curl),null)
+})
+test('reps keep counting while the form metric is missing, and form reports unassessable', () => {
+  const tracker = createTracker(curl)
+  let result
+  for (const [offset, angle] of [[0,160],[160,160],[200,100],[400,60],[560,60],[600,100],[800,160],[960,160]]) {
+    result = tracker.update({elbow:angle,upperArm:null},offset)
+  }
+  assert.equal(result.reps,1)
+  assert.equal(result.form,'unassessable')
+})
+test('a raised-arm warning does not stay stuck when the hip disappears', () => {
+  const tracker = createTracker(curl)
+  sample(tracker,160,60,0)
+  assert.equal(sample(tracker,160,60,400).form,'warning')
+  assert.deepEqual(tracker.update({elbow:160,upperArm:null},450).messages,[])
 })

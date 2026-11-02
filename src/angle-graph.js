@@ -1,8 +1,9 @@
 import { createAngleHistory } from './angle-history.js'
 
-export function createAngleGraph(canvas, thresholds) {
+export function createAngleGraph(canvas) {
   const ctx = canvas.getContext('2d')
-  const history = createAngleHistory()
+  let thresholds = []
+  let series = []
   let lastTime = 0
 
   function draw(now = lastTime) {
@@ -35,25 +36,36 @@ export function createAngleGraph(canvas, thresholds) {
       ctx.beginPath(); ctx.moveTo(left, y(angle)); ctx.lineTo(right, y(angle)); ctx.stroke()
     }
     ctx.setLineDash([])
-    ctx.strokeStyle = '#22d3ee'
-    ctx.fillStyle = '#22d3ee'
     ctx.lineWidth = 2
-    for (const segment of history.segments(now)) {
-      ctx.beginPath()
-      segment.forEach((point, index) => {
-        if (index === 0) ctx.moveTo(x(point.time), y(point.angle))
-        else ctx.lineTo(x(point.time), y(point.angle))
-      })
-      ctx.stroke()
-      if (segment.length === 1) {
-        ctx.beginPath(); ctx.arc(x(segment[0].time), y(segment[0].angle), 2, 0, 2 * Math.PI); ctx.fill()
+    for (const { history, color } of series) {
+      ctx.strokeStyle = color
+      ctx.fillStyle = color
+      for (const segment of history.segments(now)) {
+        ctx.beginPath()
+        segment.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(x(point.time), y(point.angle))
+          else ctx.lineTo(x(point.time), y(point.angle))
+        })
+        ctx.stroke()
+        if (segment.length === 1) {
+          ctx.beginPath(); ctx.arc(x(segment[0].time), y(segment[0].angle), 2, 0, 2 * Math.PI); ctx.fill()
+        }
       }
     }
   }
   new ResizeObserver(() => draw()).observe(canvas)
   draw()
   return {
-    add(time, angle) { history.add(time, angle); draw(time) },
-    clear() { history.clear(); draw(0) },
+    // lines: [{ id, color }]; values passed to add() are keyed by line id.
+    configure(lines, angles) {
+      series = lines.map(line => ({ ...line, history: createAngleHistory() }))
+      thresholds = angles
+      draw(0)
+    },
+    add(time, values) {
+      for (const line of series) line.history.add(time, values[line.id])
+      draw(time)
+    },
+    clear() { for (const line of series) line.history.clear(); draw(0) },
   }
 }
