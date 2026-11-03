@@ -284,3 +284,94 @@ test('seated leg raise ignores a half raise and flags leaning back', async () =>
   assert.equal(result.reps,1)
   assert.equal(result.flaggedReps,1)
 })
+
+test('auto side follows the rowing arm, not the straighter, more visible bracing arm', async () => {
+  const { row } = await import('../src/exercises.js')
+  const { createSideChooser } = await import('../src/exercise-tracker.js')
+  // Side-on with the left side nearer; the far right arm rows, the near left arm is braced straight.
+  const arm = (shoulder, elbow, wrist, hip, angle) => {
+    const radians = angle*Math.PI/180
+    return { [shoulder]:[.5,.4], [elbow]:[.5,.6], [wrist]:[.5+.2*Math.sin(radians),.6-.2*Math.cos(radians)], [hip]:[.8,.4] }
+  }
+  const frame = rowing => {
+    const points = body({...arm(11,13,15,23,172), ...arm(12,14,16,24,rowing)})
+    for (const index of [11,13,15,23]) points[index] = {...points[index], z:0, visibility:1}
+    for (const index of [12,14,16,24]) points[index] = {...points[index], z:.3, visibility:.85}
+    return points
+  }
+  // Hang, then three rows of 1 s up and 2 s down, then a pause.
+  const angles = []
+  for (let t = 0; t < 500; t += 33) angles.push([t,170])
+  for (let rep = 0; rep < 3; rep++) {
+    const from = 500+rep*3500
+    for (let t = 0; t < 3500; t += 33) {
+      const angle = t < 1000 ? 170-90*t/1000 : t < 3000 ? 80+90*(t-1000)/2000 : 170
+      angles.push([from+t,angle])
+    }
+  }
+  for (let t = 11000; t < 16000; t += 33) angles.push([t,170])
+  const chooser = createSideChooser(row)
+  const tracker = createTracker(row)
+  let current = null
+  let result
+  const seenSides = []
+  for (const [t,angle] of angles) {
+    const points = frame(angle)
+    const side = chooser.update(points, undefined, t, 1000, 1000, current)
+    if (side !== current) {
+      current = side
+      seenSides.push(side)
+      tracker.resetSequence()
+      for (const { at, value } of chooser.recent(side)) tracker.update({ elbow:value }, at)
+    }
+    result = tracker.update(measurePose(points, current, 1000, 1000, row)?.metrics, t)
+  }
+  assert.equal(Math.round(measurePose(frame(80),'right',1000,1000,row).metrics.elbow), 80)
+  assert.deepEqual(seenSides, ['left','right'], 'starts on the near arm, switches once, stays through the pause')
+  assert.equal(result.reps, 3, 'the rep that revealed the rowing arm is replayed and counted')
+})
+
+test('goblet squat counts a deep squat and flags a forward chest sooner than a back squat', async () => {
+  const { gobletSquat } = await import('../src/exercises.js')
+  const tracker = createTracker(gobletSquat)
+  let result
+  for (const [t,knee] of [[0,175],[160,175],[300,90],[500,90],[700,175],[900,175]]) result = tracker.update({knee,torsoLean:30},t)
+  assert.equal(result.reps,1)
+  assert.equal(result.flaggedReps,0)
+  for (const [t,knee] of [[1000,175],[1200,110],[1400,110],[1600,175],[1800,175]]) result = tracker.update({knee,torsoLean:30},t)
+  assert.equal(result.partialReps,1)
+  for (const [t,knee] of [[1900,175],[2100,90],[2400,90],[2600,175],[2800,175]]) result = tracker.update({knee,torsoLean:50},t)
+  assert.equal(result.reps,2)
+  assert.equal(result.flaggedReps,1)
+})
+
+test('dumbbell deadlift measures the hip hinge and flags squatting the weight down', async () => {
+  const { deadlift } = await import('../src/exercises.js')
+  const standing = body({12:[.5,.2],24:[.5,.5],26:[.5,.7],28:[.5,.9]})
+  const hinged = body({12:[.2,.5],24:[.5,.5],26:[.5,.7],28:[.5,.9]})
+  assert.deepEqual(measurePose(standing,'right',1000,1000,deadlift).metrics,{hip:180,knee:180})
+  assert.equal(measurePose(hinged,'right',1000,1000,deadlift).metrics.hip,90)
+  const tracker = createTracker(deadlift)
+  let result
+  for (const [t,hip] of [[0,175],[160,175],[400,100],[600,100],[900,175],[1100,175]]) result = tracker.update({hip,knee:150},t)
+  assert.equal(result.reps,1)
+  assert.equal(result.flaggedReps,0)
+  for (const [t,hip] of [[1200,175],[1500,100],[1900,100],[2200,175],[2400,175]]) result = tracker.update({hip,knee:hip < 140 ? 95 : 170},t)
+  assert.equal(result.reps,2)
+  assert.equal(result.flaggedReps,1)
+})
+
+test('scaption counts a raise and flags bent elbows and raising above the shoulder', async () => {
+  const { scaption } = await import('../src/exercises.js')
+  const tracker = createTracker(scaption)
+  let result
+  for (const [t,raise] of [[0,10],[160,10],[600,85],[800,85],[1600,10],[1800,10]]) result = tracker.update({armRaise:raise,elbow:170},t)
+  assert.equal(result.reps,1)
+  assert.equal(result.flaggedReps,0)
+  for (const [t,raise] of [[1900,10],[2400,85],[2800,85],[3600,10],[3800,10]]) result = tracker.update({armRaise:raise,elbow:120},t)
+  assert.equal(result.reps,2)
+  assert.equal(result.flaggedReps,1)
+  for (const [t,raise] of [[3900,10],[4400,120],[4800,120],[5600,10],[5800,10]]) result = tracker.update({armRaise:raise,elbow:170},t)
+  assert.equal(result.reps,3)
+  assert.equal(result.flaggedReps,2)
+})

@@ -2,9 +2,16 @@ import './style.css'
 import { createAccount } from './account.js'
 import { createAngleGraph } from './angle-graph.js'
 import { exercises } from './exercises.js'
-import { bodyTurn, chooseSide, createTracker, createTurnGuide, hiddenJoints, measurePose } from './exercise-tracker.js'
+import { bodyTurn, createSideChooser, createTracker, createTurnGuide, hiddenJoints, measurePose } from './exercise-tracker.js'
 import { buildSessionRecord, newRunId } from './session-record.js'
 import { createMetricSmoother, createPointSmoother } from './smoothing.js'
+import { COMMANDS, bluetoothUnavailable, createImuLink } from './imu.js'
+import { createVbt } from './vbt.js'
+import { SAFETY_LABELS, bodyFrame, createSafetyMonitor } from './safety.js'
+import { createClipPlanner } from './clip-planner.js'
+import { createRecorder, recordingSupported } from './recorder.js'
+import { createRecordingsPanel } from './recordings-panel.js'
+import { saveRecording } from './device-store.js'
 import {
   PoseLandmarker,
   FilesetResolver,
@@ -12,21 +19,86 @@ import {
 
 let exercise = exercises[0]
 let lanes = []
+// Velocity loss from the fastest rep at which the sensor suggests ending the set.
+const LOSS_THRESHOLD = 25
 
+// The everyday screen is deliberately small: pick an exercise, press Start, follow the
+// one message under the picture. Everything marked "diagnostic" (settings, sensor
+// set-up, test videos, raw readouts, the graph) shows only while Show details is on.
 document.querySelector('#app').innerHTML = `
-  <nav id="account-bar" class="account-bar" aria-label="Account"></nav>
+  <header class="topbar">
+    <a class="brand" href="#">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5v11M3.5 9v6M17.5 6.5v11M20.5 9v6M6.5 12h11"/></svg>
+      Exercise Tracker
+    </a>
+    <nav id="account-bar" class="account-bar" aria-label="Account"></nav>
+  </header>
   <main id="account-view" hidden></main>
   <div id="tracker-view">
-  <h1 id="title">Exercise Tracker</h1>
-  <p id="instructions"></p>
+  <section class="hero" aria-labelledby="title">
+    <span id="exercise-label" class="eyebrow">Choose your exercise</span>
+    <div id="exercise" class="toggle-group exercise-buttons" role="group" aria-labelledby="exercise-label">
+      ${exercises.map(profile => `<button type="button" data-id="${profile.id}" aria-pressed="false">${profile.name}</button>`).join('')}
+    </div>
+    <h1 id="title">Exercise Tracker</h1>
+    <p id="instructions" class="instructions"></p>
+    <div class="controls">
+      <button id="start" class="big-button start-button" disabled>Start</button>
+      <button id="stop" class="big-button stop-button" hidden>Stop</button>
+    </div>
+  </section>
 
-  <div class="settings">
-    <div class="exercise-picker">
-      <span id="exercise-label">Exercise:</span>
-      <div id="exercise" class="toggle-group" role="group" aria-labelledby="exercise-label">
-        ${exercises.map(profile => `<button type="button" data-id="${profile.id}" aria-pressed="false">${profile.name}</button>`).join('')}
+  <div class="camera-container" id="camera-container">
+    <div class="stage" id="stage" data-running="false">
+      <video id="webcam" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="hud">
+        <div class="hud-top-left">
+          <button id="fullscreen" class="hud-button" type="button">Full screen</button>
+          <p id="status" class="hud-status">Loading pose model…</p>
+        </div>
+        <div class="hud-stats">
+          <span class="hud-label">Reps</span>
+          <div id="reps" class="hud-reps">0</div>
+          <div class="hud-details diagnostic">
+            <p id="angle"></p>
+            <p id="metrics"></p>
+            <p id="rep-counts"></p>
+            <p id="flagged"></p>
+            <p id="sensor-stats"></p>
+          </div>
+        </div>
+        <div class="hud-bottom">
+          <p id="turn" class="hud-turn" role="status" hidden></p>
+          <p id="coach" class="hud-message simple-only" data-state="unassessable" role="status"></p>
+        </div>
+      </div>
+      <div id="safety-alert" class="safety-alert" role="alert" hidden>
+        <p id="safety-message"></p>
+        <button id="safety-ok" type="button" class="big-button">I'm OK</button>
       </div>
     </div>
+    <aside class="feedback-panel diagnostic" aria-labelledby="feedback-title">
+      <h2 id="feedback-title" class="eyebrow">Feedback</h2>
+      <p id="rep-feedback" class="hud-message" data-state="unassessable" role="status"></p>
+      <p id="form" class="hud-message" data-state="unassessable" role="status">Form check waiting for camera.</p>
+      <p id="sensor-feedback" class="hud-message" data-state="within" role="status"></p>
+    </aside>
+  </div>
+
+  <p id="save-status" class="hint save-status" role="status"></p>
+
+  <div class="preferences">
+    <label class="switch"><input id="speak" type="checkbox" checked> Speak safety warnings out loud</label>
+    <label class="switch"><input id="details-toggle" type="checkbox" checked> Show details</label>
+    <label class="switch"><input id="keep-recordings" type="checkbox" checked> Keep recordings on this device</label>
+  </div>
+
+  <section id="recordings" class="card recordings" aria-labelledby="recordings-title" hidden></section>
+
+  <div id="details" class="diagnostic details-grid">
+  <section class="card settings" aria-labelledby="tracking-title">
+    <h2 id="tracking-title">Tracking</h2>
     <label>
       Side to track:
       <select id="side">
@@ -44,46 +116,40 @@ document.querySelector('#app').innerHTML = `
         <option value="heavy">Heavy (most accurate)</option>
       </select>
     </label>
-    <label><input id="world" type="checkbox" checked> 3D angles</label>
+    <label class="switch"><input id="world" type="checkbox" checked> 3D angles</label>
     <p class="hint">3D angles use MediaPipe's depth estimate, so they stay accurate when you are not
     exactly side-on or face-on. Untick to measure flat image angles instead.</p>
-  </div>
+  </section>
 
-  <div class="video-input">
-    <label>Open local test video: <input id="video-file" type="file" accept="video/*" disabled></label>
-    <p id="video-name" class="hint">No video selected. Files are processed locally, never uploaded.</p>
-    <button id="replay" disabled>Replay from start</button>
-  </div>
-
-  <div class="camera-container" id="camera-container">
-    <div class="stage" id="stage">
-      <video id="webcam" playsinline muted></video>
-      <canvas id="overlay"></canvas>
-      <div class="hud">
-        <div class="hud-top-left">
-          <button id="fullscreen" class="hud-button" type="button">Full screen</button>
-          <p id="status" class="hud-status">Loading pose model…</p>
-        </div>
-        <div class="hud-stats">
-          <span class="hud-label">Reps</span>
-          <div id="reps" class="hud-reps">0</div>
-          <div class="hud-details">
-            <p id="angle"></p>
-            <p id="metrics"></p>
-            <p id="rep-counts"></p>
-            <p id="flagged"></p>
-          </div>
-        </div>
-        <div class="hud-bottom">
-          <p id="turn" class="hud-turn" role="status" hidden></p>
-          <p id="rep-feedback" class="hud-message" data-state="unassessable" role="status"></p>
-          <p id="form" class="hud-message" data-state="unassessable" role="status">Form check waiting for camera.</p>
-        </div>
-      </div>
+  <section class="card settings sensor-panel" aria-labelledby="sensor-title">
+    <h2 id="sensor-title">Dumbbell sensor</h2>
+    <p id="sensor-status" class="hint" role="status"></p>
+    <div class="button-row">
+      <button id="sensor-connect" type="button">Connect sensor</button>
+      <button id="sensor-gyro" type="button" class="secondary" disabled>Calibrate gyro</button>
+      <button id="sensor-accel" type="button" class="secondary" disabled>Calibrate accelerometer</button>
     </div>
-  </div>
+    <label>Dumbbell weight (kg): <input id="sensor-mass" type="number" min="0.5" max="200" step="0.5" inputmode="decimal" placeholder="e.g. 5"></label>
+    <label>
+      Sensor in:
+      <select id="sensor-hand">
+        <option value="">Not specified</option>
+        <option value="left">Left hand</option>
+        <option value="right">Right hand</option>
+      </select>
+    </label>
+    <p class="hint">While the camera runs, the sensor measures lifting speed, range and power for each rep.
+    A speed drop of more than ${LOSS_THRESHOLD}% from the fastest rep is a sign of fatigue. Enter the weight to get power.</p>
+  </section>
 
-  <section class="angle-chart" aria-labelledby="graph-title">
+  <section class="card video-input" aria-labelledby="video-title">
+    <h2 id="video-title">Test video</h2>
+    <label>Open a local video <input id="video-file" type="file" accept="video/*" disabled></label>
+    <p id="video-name" class="hint">No video selected. Files are processed locally, never uploaded.</p>
+    <button id="replay" class="secondary" disabled>Replay from start</button>
+  </section>
+
+  <section class="card angle-chart" aria-labelledby="graph-title">
     <h2 id="graph-title"></h2>
     <canvas id="angle-graph" role="img"></canvas>
     <p class="hint"><span id="graph-legend"></span><br>
@@ -91,12 +157,7 @@ document.querySelector('#app').innerHTML = `
   </section>
 
   <p id="rules" class="hint"></p>
-
-  <div>
-    <button id="start" disabled>Start Camera</button>
-    <button id="stop" disabled>Stop Camera</button>
   </div>
-  <p id="save-status" class="hint save-status" role="status"></p>
   </div>
 `
 
@@ -130,13 +191,230 @@ const stopButton = document.querySelector('#stop')
 const fileInput = document.querySelector('#video-file')
 const videoName = document.querySelector('#video-name')
 const replayButton = document.querySelector('#replay')
+const trackerView = document.querySelector('#tracker-view')
+const coachLabel = document.querySelector('#coach')
+const safetyAlert = document.querySelector('#safety-alert')
+const safetyMessage = document.querySelector('#safety-message')
+const safetyOk = document.querySelector('#safety-ok')
+const speakToggle = document.querySelector('#speak')
+const detailsToggle = document.querySelector('#details-toggle')
+const keepRecordingsToggle = document.querySelector('#keep-recordings')
+const recordingsPanel = createRecordingsPanel(document.querySelector('#recordings'))
 const account = createAccount({
   bar:document.querySelector('#account-bar'),
   view:document.querySelector('#account-view'),
-  trackerView:document.querySelector('#tracker-view'),
+  trackerView,
   saveStatus:document.querySelector('#save-status'),
   onLeaveTracker:() => stopCamera(),
 })
+
+// Dumbbell sensor: connection, calibration and the live readout. Its reps are only
+// analysed while the camera runs, so they belong to the same run as the camera's.
+const sensorStatus = document.querySelector('#sensor-status')
+const sensorConnect = document.querySelector('#sensor-connect')
+const sensorGyro = document.querySelector('#sensor-gyro')
+const sensorAccel = document.querySelector('#sensor-accel')
+const sensorMassInput = document.querySelector('#sensor-mass')
+const sensorHand = document.querySelector('#sensor-hand')
+const sensorFeedback = document.querySelector('#sensor-feedback')
+const sensorStats = document.querySelector('#sensor-stats')
+const sensor = {
+  state:'disconnected', name:null, info:null, packet:null, error:null, note:null,
+  calibration:null, lastRep:null, fatigued:false, connecting:false,
+}
+let vbt
+
+const SETTINGS_KEY = 'exercise-tracker:sensor'
+try {
+  const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}')
+  if (Number.isFinite(saved.massKg)) sensorMassInput.value = saved.massKg
+  if (['', 'left', 'right'].includes(saved.hand)) sensorHand.value = saved.hand
+} catch {}
+
+// Show details and spoken warnings are per-device preferences; details start on.
+const PREFERENCES_KEY = 'exercise-tracker:preferences'
+try {
+  const saved = JSON.parse(localStorage.getItem(PREFERENCES_KEY) ?? '{}')
+  if (typeof saved.details === 'boolean') detailsToggle.checked = saved.details
+  if (typeof saved.speak === 'boolean') speakToggle.checked = saved.speak
+  if (typeof saved.keepRecordings === 'boolean') keepRecordingsToggle.checked = saved.keepRecordings
+} catch {}
+function applyPreferences() {
+  trackerView.classList.toggle('simple', !detailsToggle.checked)
+  try {
+    localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ details:detailsToggle.checked, speak:speakToggle.checked, keepRecordings:keepRecordingsToggle.checked }))
+  } catch {}
+}
+keepRecordingsToggle.addEventListener('change', applyPreferences)
+if (!recordingSupported()) {
+  keepRecordingsToggle.disabled = true
+  keepRecordingsToggle.parentElement.title = 'This browser cannot record video (no WebCodecs support).'
+}
+detailsToggle.addEventListener('change', applyPreferences)
+speakToggle.addEventListener('change', () => {
+  applyPreferences()
+  if (!speakToggle.checked) window.speechSynthesis?.cancel()
+})
+applyPreferences()
+
+function sensorMass() {
+  const value = sensorMassInput.valueAsNumber
+  return Number.isFinite(value) && value >= 0.5 && value <= 200 ? value : null
+}
+
+const sensorLink = createImuLink({
+  onState(event) {
+    sensor.state = event.state
+    sensor.name = event.device
+    sensor.info = event.info
+    if (event.error) sensor.error = event.error.message
+    else if (event.state === 'connected') sensor.error = null
+    if (event.state !== 'connected') sensor.packet = null
+    renderSensor()
+  },
+  onPacket(packet) {
+    sensor.packet = packet
+    followCalibration(packet)
+    if (running && source === 'camera') {
+      for (const sample of packet.samples) {
+        for (const alert of safety.imu(sample, performance.now())) showSafety(alert)
+        for (const event of vbt.push(sample)) {
+          sensor.lastRep = event.rep
+          sensor.fatigued = event.fatigued
+          run.startedAt ??= Date.now()
+          run.endedAt = Date.now()
+        }
+      }
+    }
+    renderSensor()
+  },
+})
+
+// The firmware reports calibration through header fields; this turns them into messages.
+function followCalibration(packet) {
+  const calibration = sensor.calibration
+  if (!calibration) return
+  const done = (note, state) => {
+    sensor.calibration = null
+    sensor.note = { text:note, state, at:Date.now() }
+    sensorLink.readInfo().then(info => { sensor.info = info; renderSensor() })
+  }
+  if (calibration.kind === 'gyro') {
+    if (packet.gyroCalCount !== calibration.count) done('Gyro calibrated.', 'within')
+    else if (!packet.has('calibrating') && Date.now() - calibration.since > 1000) {
+      done('Gyro calibration timed out: set the dumbbell down on a steady surface and keep it completely still, then try again.', 'warning')
+    }
+  } else if (Date.now() - calibration.since < 500) {
+    // Packets sent before the command arrived still carry the previous calibration's result.
+  } else if (packet.accelState === 'done') done('Accelerometer calibrated and saved on the sensor.', 'within')
+  else if (packet.accelState === 'failed') {
+    done('Accelerometer calibration failed: hold each side perfectly still, and include all six sides. Try again.', 'warning')
+  } else if (packet.accelState === 'idle' && Date.now() - calibration.since > 1000) {
+    done('Accelerometer calibration cancelled.', '')
+  }
+}
+
+function sensorHealth(packet) {
+  if (packet.has('linkTooSmall')) return 'This Bluetooth connection cannot carry sensor data (MTU too small). Use Chrome on a computer, or update Android.'
+  if (packet.has('sensorError')) return 'The sensor board cannot read its MPU6050: check the wiring (SDA, SCL, 3V3, GND).'
+  if (sensor.calibration?.kind === 'gyro' || packet.has('calibrating')) return 'Calibrating gyro: set the dumbbell down and keep it still.'
+  if (sensor.calibration?.kind === 'accel') {
+    return `Accelerometer calibration: ${packet.accelPoses} of 6+ positions captured. Rest it still for 2 seconds on each side in turn (top, bottom, left, right, front, back).`
+  }
+  if (!packet.has('gyroReady')) return 'Set the dumbbell down still for a second so the sensor can calibrate.'
+  return null
+}
+
+function renderSensor() {
+  const unavailable = bluetoothUnavailable()
+  const connected = sensor.state === 'connected'
+  const packet = sensor.packet
+  let text
+  if (unavailable) text = unavailable
+  else if (sensor.state === 'connecting') text = 'Connecting to the sensor…'
+  else if (sensor.state === 'reconnecting') text = `Connection lost. Reconnecting to ${sensor.name}…`
+  else if (!connected) text = sensor.error ?? 'Not connected. Switch the sensor on (its light breathes blue) and press Connect sensor.'
+  else if (!packet) text = `Connected to ${sensor.name}. Waiting for data…`
+  else {
+    const health = sensorHealth(packet)
+    const parts = [`${sensor.name} · ${packet.tempC.toFixed(1)} °C.`]
+    if (health) parts.push(health)
+    else {
+      if (!packet.has('accelCalibrated')) parts.push('Accelerometer not calibrated yet, so speeds are less accurate.')
+      parts.push(running && source === 'camera' ? 'Recording reps.' : 'Start the camera to record reps.')
+      const lost = vbt.report().interruptions
+      if (lost) parts.push(`Data dropped ${lost === 1 ? 'once' : `${lost} times`}; a rep may be missing.`)
+    }
+    text = parts.join(' ')
+  }
+  // Outcome notes (calibrated, failed, cancelled) fade after a few seconds.
+  if (sensor.note && Date.now() - sensor.note.at > 8000 && !sensor.note.sticky) sensor.note = null
+  if (sensor.note && connected) text = `${sensor.note.text} ${text}`
+  setText(sensorStatus, text)
+  sensorStatus.dataset.state = sensor.note?.state ?? ''
+
+  sensorConnect.disabled = Boolean(unavailable) || sensor.connecting || sensor.state === 'connecting'
+  setText(sensorConnect, connected || sensor.state === 'reconnecting' ? 'Disconnect sensor' : sensor.connecting ? 'Connecting…' : 'Connect sensor')
+  const calibrating = Boolean(sensor.calibration)
+  sensorGyro.disabled = !packet || calibrating
+  sensorAccel.disabled = !packet || sensor.calibration?.kind === 'gyro'
+  setText(sensorAccel, sensor.calibration?.kind === 'accel' ? 'Cancel accelerometer calibration' : 'Calibrate accelerometer')
+
+  const reps = vbt?.report().reps.length ?? 0
+  sensorStats.hidden = !connected
+  setText(sensorStats, connected ? `Sensor reps: ${reps}` : '')
+  const rep = sensor.lastRep
+  if (!rep) {
+    setText(sensorFeedback, '')
+    return
+  }
+  const power = rep.meanPowerW === null ? '' : ` · ${Math.round(rep.meanPowerW)} W`
+  const drop = rep.number > 1 ? ` · speed drop ${Math.round(rep.velocityLossPct)}%` : ''
+  sensorFeedback.dataset.state = sensor.fatigued ? 'warning' : 'within'
+  setText(sensorFeedback, `Sensor rep ${rep.number}: ${rep.mcv.toFixed(2)} m/s · ${Math.round(rep.romCm)} cm${power}${drop}` +
+    (sensor.fatigued ? `. Speed is down more than ${LOSS_THRESHOLD}% from your fastest rep: consider ending the set.` : ''))
+}
+
+async function sensorCommand(command, calibration) {
+  try {
+    await sensorLink.send(command)
+    sensor.note = null
+    sensor.calibration = calibration && { ...calibration, since:Date.now(), count:sensor.packet?.gyroCalCount }
+  } catch (error) {
+    sensor.note = { text:`Could not reach the sensor: ${error.message}`, state:'warning', at:Date.now() }
+  }
+  renderSensor()
+}
+
+sensorConnect.addEventListener('click', async () => {
+  if (sensor.state === 'connected' || sensor.state === 'reconnecting') return sensorLink.disconnect()
+  sensor.connecting = true
+  sensor.error = null
+  sensor.note = null
+  renderSensor()
+  try { await sensorLink.connect() }
+  catch (error) { sensor.error = error.message }
+  finally {
+    sensor.connecting = false
+    renderSensor()
+  }
+})
+sensorGyro.addEventListener('click', () => sensorCommand(COMMANDS.calibrateGyro, { kind:'gyro' }))
+sensorAccel.addEventListener('click', () => sensor.calibration?.kind === 'accel'
+  ? sensorCommand(COMMANDS.cancel, null).then(() => { sensor.note = { text:'Accelerometer calibration cancelled.', state:'', at:Date.now() }; renderSensor() })
+  : sensorCommand(COMMANDS.calibrateAccel, { kind:'accel' }))
+
+// Weight and hand describe the run, so a change closes the current one (and saves it).
+function sensorSettingsChanged() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ massKg:sensorMass(), hand:sensorHand.value })) } catch {}
+  if (sensorMassInput.value && sensorMass() === null) {
+    sensor.note = { text:'Weight must be between 0.5 and 200 kg; power is left out until it is.', state:'warning', at:Date.now(), sticky:true }
+  } else if (sensor.note?.text.startsWith('Weight')) sensor.note = null
+  finishRun()
+  renderSensor()
+}
+sensorMassInput.addEventListener('change', sensorSettingsChanged)
+sensorHand.addEventListener('change', sensorSettingsChanged)
 
 let model
 let vision
@@ -181,6 +459,7 @@ function createLanes() {
     colorName: LANE_COLORS[index][0],
     color: LANE_COLORS[index][1],
     tracker: createTracker(exercise),
+    sideChooser: createSideChooser(exercise),
     smoother: createMetricSmoother(exercise.maxGapMs),
     pointSmoother: createPointSmoother(exercise.maxGapMs),
     points: null,
@@ -297,7 +576,128 @@ function clearMeasurements(message) {
   formLabel.textContent = message
 }
 
+// The single plain-language message shown while details are hidden: the most
+// important thing to fix first, then encouragement.
+function laneCoach(lane) {
+  const { form, messages, tempoMessage, waiting, lastRep } = lane.assessment
+  if (form === 'warning') return { state:'warning', text:messages.join(' ') }
+  if (!lane.measurement) return { state:'unassessable' }
+  if (tempoMessage) return { state:'warning', text:tempoMessage }
+  if (waiting) return { state:'pending', text:exercise.startCue }
+  if (!lastRep) return { state:'pending', text:'Off you go: start your first rep.' }
+  if (lastRep.kind === 'partial' || lastRep.tempo === 'fast' || lastRep.tempo === 'slow') return { state:'warning', text:lastRep.messages.join(' ') }
+  return { state:'within', text:'Good rep! Keep going.' }
+}
+
+function renderCoach() {
+  const items = lanes.map(lane => ({ lane, ...laneCoach(lane) }))
+  let state = ['warning', 'unassessable', 'pending', 'within'].find(form => items.some(item => item.state === form))
+  // Warnings name their side when both are tracked; other messages read the same for both.
+  const prefix = item => lanes.length > 1 && item.state === 'warning' ? `${laneName(item.lane)}: ` : ''
+  let text = [...new Set(items.filter(item => item.state === state).map(item => prefix(item) + item.text))].join(' ')
+  if (state === 'unassessable') {
+    // Nobody in view reads as one instruction; otherwise name just the missing joints.
+    const blocked = items.filter(item => item.state === 'unassessable').map(item => item.lane)
+    const nobody = !lanes.some(lane => lane.measurement) && blocked.every(lane => !lane.hidden.length || lane.hidden.length === jointNames().length)
+    const missing = blocked.filter(lane => lane.hidden.length)
+    text = nobody ? 'Step into the picture so the camera can see you.'
+      : missing.length ? `Move so the camera can see your ${hiddenText(missing)}.` : 'Stand where the camera can see you clearly.'
+  }
+  if (state === 'within' && sensor.fatigued) {
+    state = 'warning'
+    text = 'Your lifts are slowing down. Time for a rest.'
+  }
+  coachLabel.dataset.state = state
+  setText(coachLabel, text)
+}
+
+function setRunning(on) {
+  running = on
+  stage.dataset.running = String(on)
+}
+
+// One big button at a time: Start while idle, Stop while the camera runs.
+function syncControls() {
+  startButton.hidden = Boolean(stream)
+  stopButton.hidden = !stream
+  startButton.disabled = !model
+}
+
+// Safety alerts: a caution clears itself after a few seconds; a possible fall stays
+// until the person taps I'm OK. Every alert is kept with the run for the coach.
+const CAUTION_MS = 6000
+const MAX_RUN_ALERTS = 200
+let shownAlert = null
+let alertTimer
+let audio
+
+function showSafety(alert) {
+  if (run.safety.length < MAX_RUN_ALERTS) run.safety.push({ kind:alert.kind, at:Date.now() })
+  markClip({ kind:'safety', lane:null, rep:null, text:SAFETY_LABELS[alert.kind] ?? alert.kind, at:performance.now() })
+  run.startedAt ??= Date.now()
+  run.endedAt = Date.now()
+  // A possible fall is never covered up by a lesser warning.
+  if (shownAlert?.severity === 'danger' && alert.severity !== 'danger') return
+  shownAlert = alert
+  safetyAlert.dataset.severity = alert.severity
+  safetyMessage.textContent = alert.message
+  safetyOk.hidden = alert.severity !== 'danger'
+  safetyAlert.hidden = false
+  clearTimeout(alertTimer)
+  if (alert.severity !== 'danger') alertTimer = setTimeout(hideSafety, CAUTION_MS)
+  speak(alert.message, alert.severity === 'danger')
+}
+
+function hideSafety() {
+  clearTimeout(alertTimer)
+  shownAlert = null
+  safetyAlert.hidden = true
+}
+safetyOk.addEventListener('click', () => {
+  hideSafety()
+  window.speechSynthesis?.cancel()
+})
+
+// Warnings are read aloud, since the person is watching their body, not the screen.
+function speak(text, urgent) {
+  if (!speakToggle.checked) return
+  if (urgent) beep()
+  const synth = window.speechSynthesis
+  if (!synth || typeof SpeechSynthesisUtterance === 'undefined') return
+  synth.cancel()
+  const utterance = new SpeechSynthesisUtterance(text)
+  utterance.rate = 0.9
+  synth.speak(utterance)
+}
+
+function beep() {
+  try {
+    const tone = audio.createOscillator()
+    const gain = audio.createGain()
+    tone.frequency.value = 880
+    gain.gain.value = 0.2
+    tone.connect(gain).connect(audio.destination)
+    tone.start()
+    tone.stop(audio.currentTime + 0.4)
+  } catch {}
+}
+
+// Browsers only allow sound and speech that start from a tap, so Start unlocks both.
+function unlockSound() {
+  try {
+    audio ??= new AudioContext()
+    audio.resume()
+  } catch {}
+  const synth = window.speechSynthesis
+  if (synth && typeof SpeechSynthesisUtterance !== 'undefined' && !synth.speaking) {
+    const silent = new SpeechSynthesisUtterance(' ')
+    silent.volume = 0
+    synth.speak(silent)
+  }
+}
+
 let turnGuide
+let safety
 // The run being recorded. Settings are captured when it begins, because the
 // controls already show the new values by the time the old run is finished.
 let run
@@ -306,24 +706,97 @@ let leavingPage = false
 function beginRun() {
   run = {
     id:newRunId(), exercise, source:source === 'file' ? 'video' : 'camera',
-    side:sideSelect.value, angles:worldToggle.checked ? '3d' : '2d', startedAt:null, endedAt:null,
+    side:sideSelect.value, angles:worldToggle.checked ? '3d' : '2d', startedAt:null, endedAt:null, safety:[],
   }
+  vbt = createVbt({ massKg:sensorMass(), loadStart:exercise.loadStart, lossThresholdPct:LOSS_THRESHOLD })
+  sensor.lastRep = null
+  sensor.fatigued = false
+}
+
+// The sensor's reps for the run that is ending, with what is needed to read them later.
+function sensorReport() {
+  vbt.finish()
+  const report = vbt.report()
+  if (!report.reps.length) return null
+  return { ...report, hand:sensorHand.value || null, sensor:{ name:sensor.name, firmware:sensor.info?.firmware ?? null } }
 }
 
 // Hands the run that is ending to the account for saving, then starts a fresh one.
 function finishRun() {
   if (!run) return
+  let record = null
   if (run.startedAt) {
     for (const lane of lanes) lane.tracker.resetSequence()
-    account.saveSession(buildSessionRecord({ ...run, lanes }), { leaving:leavingPage })
+    record = buildSessionRecord({ ...run, lanes, imu:sensorReport() })
+    account.saveSession(record, { leaving:leavingPage })
   }
+  if (run.recording) finishRecording(run, record)
   beginRun()
+  if (stream && running) startRecording()
+}
+
+// Recording: camera runs only (a local video file already is a recording). The
+// encoder starts asynchronously, so frames before it is ready are not recorded.
+// Clips are made only for a signed-in patient sharing clips with a coach; the full
+// recording only when "Keep recordings on this device" is on.
+const toEpoch = ms => performance.timeOrigin + ms
+function startRecording() {
+  const keepFull = keepRecordingsToggle.checked
+  if (!recordingSupported() || source !== 'camera' || (!keepFull && !account.clipsWanted())) return
+  const recording = { planner:createClipPlanner(), clips:[], recorder:null, closed:false, startedAt:Date.now(), exercise:run.exercise }
+  run.recording = recording
+  recording.ready = createRecorder({
+    width:video.videoWidth, height:video.videoHeight, keepFull,
+    onError:error => { status.textContent = `Recording stopped: ${error.message}` },
+  }).then(recorder => {
+    if (recording.closed) { recorder?.close(); return null }
+    recording.recorder = recorder
+    return recorder
+  }, () => null)
+}
+
+function markClip(event) {
+  if (run?.recording && account.clipsWanted()) run.recording.planner.mark(event)
+}
+
+function cutClips(recording, plans) {
+  for (const plan of plans) {
+    const clip = recording.recorder.clip(plan.start, plan.end)
+    if (!clip) continue
+    recording.clips.push({
+      id:newRunId(), blob:clip.blob, type:clip.blob.type, startedAt:Math.round(toEpoch(clip.start)), durationMs:Math.round(clip.durationMs),
+      labels:plan.labels.map(label => ({ ...label, at:Math.round(toEpoch(label.at)) })),
+    })
+  }
+}
+
+async function finishRecording(finished, record) {
+  const recording = finished.recording
+  recording.closed = true
+  const recorder = await recording.ready
+  if (!recorder) return
+  try {
+    await recorder.flush()
+    cutClips(recording, recording.planner.flush())
+    const full = recorder.finish()
+    // Clips belong to the saved session; a run with nothing to save has no clips to share.
+    if (record && recording.clips.length) account.saveClips(record.id, recording.clips)
+    if (full) {
+      await saveRecording({ id:finished.id, startedAt:recording.startedAt, exercise:recording.exercise.id,
+        durationMs:Math.round(full.durationMs), type:full.blob.type, blob:full.blob })
+      recordingsPanel.refresh()
+    }
+  } catch (error) {
+    recorder.close()
+    status.textContent = `Could not keep the recording: ${error.message}`
+  }
 }
 
 function resetRun() {
   finishRun()
   lanes = createLanes()
   turnGuide = createTurnGuide(exercise.facing)
+  safety = createSafetyMonitor(exercise)
   renderTurn(null)
   const label = exercise.labels[exercise.rep.metric]
   angleGraph.configure(lanes.map(({ id, color }) => ({ id, color })), [exercise.rep.target, exercise.rep.start])
@@ -338,7 +811,7 @@ function resetRun() {
 
 function applyExercise() {
   const { labels, formRules } = exercise
-  title.textContent = `Exercise Tracker · ${exercise.name}`
+  title.textContent = exercise.name
   for (const toggle of exerciseToggles.children) toggle.setAttribute('aria-pressed', String(toggle.dataset.id === exercise.id))
   instructions.textContent = exercise.instructions
   sideSelect.value = exercise.defaultSide
@@ -346,9 +819,11 @@ function applyExercise() {
   flaggedLabel.hidden = !formRules.length
   rulesLabel.textContent = (formRules.length
     ? `Prototype check: ${list(formRules.map(rule => `${labels[rule.metric].toLowerCase()} ${rule.max !== undefined ? `over ${rule.max}°` : `under ${rule.min}°`} for ${rule.holdMs / 1000} seconds`))} triggers feedback. ` +
-      'This checks visible movement features, not overall exercise safety.'
+      'Form checks look at visible movement features only.'
     : 'No form rules for this exercise yet; only reps are counted.') +
-    (exercise.tempo ? ` ${exercise.tempo.hint}` : '')
+    (exercise.tempo ? ` ${exercise.tempo.hint}` : '') +
+    ' Safety alerts watch for sudden drops, falls, leaning off balance, jerky movements and a dropped dumbbell. ' +
+    'They are prototype checks, not a medical fall detector.'
   resetRun()
 }
 
@@ -405,12 +880,12 @@ video.addEventListener('loadedmetadata', () => {
 video.addEventListener('play', () => {
   if (source !== 'file') return
   cancelAnimationFrame(animationId)
-  running = true
+  setRunning(true)
   trackPose()
 })
 video.addEventListener('pause', () => {
   if (source !== 'file') return
-  running = false
+  setRunning(false)
   cancelAnimationFrame(animationId)
   status.textContent = video.ended ? 'Video finished. Replay to start a new run.' : 'Video paused.'
 })
@@ -469,7 +944,7 @@ async function loadModel(variant) {
     model = next
     status.textContent = running
       ? `Model switched to ${variant} (${delegate}).`
-      : `Model ready (${variant}, ${delegate}). Start your camera or open a local video.`
+      : `Ready. Press Start to begin. (Pose model: ${variant}, ${delegate}.)`
   } catch (error) {
     if (request === modelRequest) status.textContent = `Model failed to load: ${error.message}`
   } finally {
@@ -482,6 +957,7 @@ async function loadModel(variant) {
 }
 
 startButton.addEventListener('click', async () => {
+  unlockSound()
   stopCamera()
   releaseFile()
   source = 'camera'
@@ -519,8 +995,9 @@ startButton.addEventListener('click', async () => {
 
     angleGraph.clear()
     lastVideoTime = -1
-    running = true
-    stopButton.disabled = false
+    setRunning(true)
+    syncControls()
+    startRecording()
     trackPose()
   } catch (error) {
     stopCamera()
@@ -550,13 +1027,14 @@ function drawPose(lane) {
 
 function trackLane(lane, landmarks, worldLandmarks, now) {
   if (lane.side === 'auto') {
-    const side = chooseSide(landmarks, exercise, lane.current)
+    const side = lane.sideChooser.update(landmarks, worldLandmarks, now, canvas.width, canvas.height, lane.current)
     if (side !== lane.current) {
       // A different leg or arm is a different movement history.
       lane.current = side
       lane.tracker.resetSequence()
       lane.smoother.reset()
       lane.pointSmoother.reset()
+      for (const { at, value } of lane.sideChooser.recent(side)) lane.tracker.update({ [exercise.rep.metric]:value }, at)
     }
   }
   lane.hidden = lane.current ? hiddenJoints(landmarks, lane.current, exercise) : jointNames()
@@ -566,6 +1044,24 @@ function trackLane(lane, landmarks, worldLandmarks, now) {
   lane.metrics = lane.smoother.smooth(lane.measurement?.metrics, now)
   lane.points = lane.pointSmoother.smooth(lane.measurement?.points, now)
   lane.assessment = lane.tracker.update(lane.metrics, now)
+  noteClipEvents(lane, now)
+}
+
+// Form warnings clip from when they start; tempo problems once the rep is judged,
+// reaching back to the start of its lift.
+function noteClipEvents(lane, now) {
+  const { form, messages, reps, lastRep } = lane.assessment
+  if (form === 'warning' && lane.lastForm !== 'warning') {
+    markClip({ kind:'form', lane:lane.id, rep:reps + 1, text:messages[0], at:now })
+  }
+  lane.lastForm = form
+  if (lastRep && lastRep !== lane.lastRep) {
+    lane.lastRep = lastRep
+    if (lastRep.kind === 'full' && (lastRep.tempo === 'fast' || lastRep.tempo === 'slow')) {
+      markClip({ kind:'tempo', lane:lane.id, rep:lastRep.number, text:lastRep.messages[0] ?? `Too ${lastRep.tempo}`,
+        at:now, from:now - (lastRep.liftMs ?? 0) - (lastRep.lowerMs ?? 0) - 500 })
+    }
+  }
 }
 
 function trackPose() {
@@ -587,12 +1083,20 @@ function trackPose() {
         run.endedAt = Date.now()
       }
       angleGraph.add(now, Object.fromEntries(lanes.map(lane => [lane.id, lane.metrics?.[exercise.rep.metric]])))
+      const limbs = Object.fromEntries(lanes.map(lane => [`${lane.id}:${lane.current}`, lane.metrics?.[exercise.rep.metric] ?? null]))
+      for (const alert of safety.update({ body:bodyFrame(result.landmarks[0], canvas.width, canvas.height), limbs }, now)) showSafety(alert)
       renderMeasurements()
       renderForm()
       renderRepFeedback()
+      renderCoach()
 
       const tracked = lanes.filter(lane => lane.measurement)
       for (const lane of tracked) drawPose(lane)
+      const recorder = run.recording?.recorder
+      if (recorder && source === 'camera') {
+        recorder.addFrame(video, canvas, now)
+        cutClips(run.recording, run.recording.planner.due(now))
+      }
       const blocked = lanes.filter(lane => lane.hidden.length)
       if (tracked.length) {
         const space = tracked[0].measurement.space === '3d' ? '3D' : '2D'
@@ -616,10 +1120,12 @@ function stopCamera() {
   video.pause()
   for (const lane of lanes) {
     lane.tracker.resetSequence()
+    lane.sideChooser.reset()
     lane.smoother.reset()
     lane.pointSmoother.reset()
   }
-  running = false
+  setRunning(false)
+  safety?.reset()
   cancelAnimationFrame(animationId)
   finishRun()
   stream?.getTracks().forEach((track) => track.stop())
@@ -628,11 +1134,10 @@ function stopCamera() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
   fileInput.disabled = !model
-  startButton.disabled = !model
-  stopButton.disabled = true
+  syncControls()
   clearMeasurements('Form check paused.')
   renderTurn(null)
-  status.textContent = 'Camera stopped.'
+  status.textContent = 'Stopped. Press Start to go again.'
 }
 
 // Real full screen where the browser allows it on an element; otherwise (iPhone
@@ -679,4 +1184,5 @@ document.addEventListener('visibilitychange', () => {
   }
 })
 
+renderSensor()
 loadModel(modelSelect.value)

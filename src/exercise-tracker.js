@@ -89,6 +89,60 @@ export function chooseSide(landmarks, profile, current, margin = 0.1) {
   return left >= right ? 'left' : 'right'
 }
 
+// Spread of the middle 80% of values, so a single glitched frame is not "motion".
+function spread(values) {
+  if (values.length < 2) return 0
+  const sorted = values.slice().sort((a,b) => a-b)
+  const at = fraction => sorted[Math.round((sorted.length-1)*fraction)]
+  return at(0.9)-at(0.1)
+}
+
+// Auto side for one-limb exercises (one-arm rows, single leg raises): the working
+// limb is the one moving, while the other is braced straight and often just as
+// visible. Each side's rep angle is kept for windowMs; once one side moves through
+// most of the rep and clearly more than the other, it is locked in and kept through
+// pauses until the other side out-moves it or it drops out of view. Before any
+// motion, the side nearer the camera is preferred when side-on, else visibility.
+// recent(side) is that side's raw rep angles, to replay into a fresh tracker on a
+// switch so the rep that revealed the working limb is still counted.
+export function createSideChooser(profile, { windowMs = 3000, margin = 0.1 } = {}) {
+  const threshold = Math.abs(profile.rep.start-profile.rep.target)*0.5
+  let history, locked
+  function reset() {
+    history = { left:[], right:[] }
+    locked = null
+  }
+  reset()
+  return {
+    update(landmarks, worldLandmarks, now, width, height, current) {
+      if (!landmarks || !Number.isFinite(now)) return current
+      const motion = {}
+      for (const side of ['left','right']) {
+        const samples = history[side]
+        const value = measurePose(landmarks, side, width, height, profile, worldLandmarks)?.metrics[profile.rep.metric]
+        if (Number.isFinite(value)) samples.push({ at:now, value })
+        while (samples.length && (now-samples[0].at > windowMs || samples[0].at > now)) samples.shift()
+        motion[side] = spread(samples.map(sample => sample.value))
+      }
+      const visible = side => sideScore(landmarks, side, profile) >= profile.minVisibility
+      for (const side of ['left','right']) {
+        const other = side === 'left' ? 'right' : 'left'
+        if (visible(side) && motion[side] >= threshold && motion[side] >= motion[other]+threshold) locked = side
+      }
+      if (locked && visible(locked)) return locked
+      locked = null
+      const turn = bodyTurn(worldLandmarks) ?? bodyTurn(landmarks)
+      if (profile.facing === 'side' && turn && turn.yaw >= 45) {
+        const near = turn.far === 'right' ? 'left' : 'right'
+        if (visible(near)) return near
+      }
+      return chooseSide(landmarks, profile, current, margin)
+    },
+    recent: side => history[side].map(sample => ({...sample})),
+    reset,
+  }
+}
+
 // Body yaw from the shoulder and hip lines: 0° facing the camera, 90° side-on.
 // z grows away from the camera, so the side with the larger z is the far side.
 // Works on world landmarks (metres) or image landmarks (z on the x scale).

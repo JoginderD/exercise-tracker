@@ -41,3 +41,22 @@ test('records built by the client pass server validation', () => {
   assert.equal(clean.lanes[0].reps, 1)
   assert.equal(clean.lanes[0].history[0].kind, 'full')
 })
+
+test('a run with only sensor reps is still saved, and passes validation', () => {
+  const lane = { side:'left', tracker:createTracker(curl) }
+  const imu = { massKg:null, lossThresholdPct:25, interruptions:0, hand:null, sensor:{ name:'Dumbbell-AB12', firmware:'1.0.0' },
+    reps:[{ number:1, mcv:0.5, peakVelocity:0.8, romCm:38, concentricMs:900, eccentricMs:null, meanPowerW:null, peakPowerW:null,
+      rotationDeg:100, peakGyroDps:200, velocityLossPct:0 }] }
+  assert.equal(buildSessionRecord(run([lane])), null)
+  const record = buildSessionRecord({ ...run([lane]), imu })
+  assert.equal(record.imu.reps.length, 1)
+  assert.equal(validateSession(JSON.parse(JSON.stringify(record))).imu.reps[0].mcv, 0.5)
+})
+
+test('a run with only a safety alert is still saved, and passes validation', () => {
+  const lane = { side:'left', tracker:createTracker(curl) }
+  const safety = [{ kind:'fall', at:Date.now() - 1000 }]
+  const record = buildSessionRecord({ ...run([lane]), safety })
+  assert.deepEqual(validateSession(JSON.parse(JSON.stringify(record))).safety, safety)
+  assert.equal(buildSessionRecord({ ...run([{ side:'left', tracker:createTracker(curl) }]), safety:[] }), null)
+})

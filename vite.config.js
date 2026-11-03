@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 
-// In development the API server runs separately (npm run server); Vite forwards /api to it.
+// In development `npm run dev` starts the API server too (scripts/dev.js); Vite forwards /api to it.
 // Host is kept as the page's host so the API's same-origin check passes.
 export default defineConfig({
   server: {

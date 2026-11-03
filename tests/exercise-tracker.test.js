@@ -122,7 +122,7 @@ test('report keeps a log of full and partial reps, settling the last one on rese
   const tracker = createTracker(curl)
   cycle(tracker, 90)
   sample(tracker, 160, 0, 1300)
-  sample(tracker, 120, 0, 1500)
+  sample(tracker, 110, 0, 1500)
   sample(tracker, 160, 0, 1700)
   sample(tracker, 160, 0, 1900)
   tracker.resetSequence()

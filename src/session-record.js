@@ -11,18 +11,24 @@ function since(report, saved) {
 
 // Builds the record saved for one run from its lanes' tracker reports and marks
 // the lanes as saved. Returns null when nothing happened, so idle runs are not stored.
-export function buildSessionRecord({ id, exercise, source, side, angles, startedAt, endedAt, lanes }) {
+// imu is the dumbbell sensor's report for the run (src/vbt.js), or null.
+// safety lists the run's safety alerts as { kind, at } (src/safety.js); a run with
+// an alert is saved even without reps, so a coach sees it.
+export function buildSessionRecord({ id, exercise, source, side, angles, startedAt, endedAt, lanes, imu = null, safety = [] }) {
   const reports = lanes.map(lane => {
     const report = lane.tracker.report()
     const delta = since(report, lane.saved)
     lane.saved = report
     return { side:lane.side, ...delta }
   })
-  if (!startedAt || !reports.some(report => report.reps || report.partialReps)) return null
+  const sensorReps = imu?.reps.length > 0
+  if (!startedAt || (!reports.some(report => report.reps || report.partialReps) && !sensorReps && !safety.length)) return null
   return {
     id, exercise:exercise.id, source, side, angles,
     startedAt, endedAt:Math.max(startedAt, endedAt ?? startedAt),
     lanes:reports,
+    ...sensorReps ? { imu } : {},
+    ...safety.length ? { safety } : {},
   }
 }
 

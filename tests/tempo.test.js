@@ -70,7 +70,7 @@ test('very fast reps are all counted, including at 15 fps', () => {
 })
 
 test('very slow reps are flagged too slow and warn while in progress', () => {
-  const result = play(createTracker(curl), curlRep({ lift: 7000, lower: 7000 }))
+  const result = play(createTracker(curl), curlRep({ lift: 9000, lower: 9000 }))
   assert.equal(result.reps, 1)
   assert.equal(result.slowReps, 1)
   assert.equal(result.lastRep.tempo, 'slow')
@@ -86,16 +86,16 @@ test('a mid-curl stall warns live, a rest at either end does not', () => {
 })
 
 test('a half curl is reported as partial and not counted', () => {
-  const result = play(createTracker(curl), curlRep({ lift: 800, lower: 1200, top: 115 }))
+  const result = play(createTracker(curl), curlRep({ lift: 800, lower: 1200, top: 105 }))
   assert.equal(result.reps, 0)
   assert.equal(result.partialReps, 1)
   assert.equal(result.lastRep.missed, 'target')
-  assert.ok(Math.abs(result.lastRep.reached - 115) < 1)
+  assert.ok(Math.abs(result.lastRep.reached - 105) < 1)
 })
 
 test('curling again without straightening is partial; the next full extension counts once', () => {
   const tracker = createTracker(curl)
-  const samples = [[0, 165], [200, 165], [400, 100], [600, 50], [800, 50], [1000, 130], [1200, 50], [1400, 50], [1600, 130], [1800, 165], [2000, 165]]
+  const samples = [[0, 165], [200, 165], [400, 100], [600, 50], [800, 50], [1000, 110], [1200, 50], [1400, 50], [1600, 110], [1800, 165], [2000, 165]]
   const result = play(tracker, samples.flatMap(([t, a], i) => {
     const [next] = samples[i + 1] ?? [t + 33]
     return Array.from({ length: Math.ceil((next - t) / 33) }, (_, k) => [t + k * 33, a])

@@ -11,8 +11,15 @@ export function createAngleGraph(canvas) {
     const width = canvas.clientWidth || 600
     const height = 240
     const ratio = window.devicePixelRatio || 1
-    canvas.width = Math.round(width * ratio)
-    canvas.height = Math.round(height * ratio)
+    // Resizing reallocates the backing store, so only do it when the size changes.
+    const pixelWidth = Math.round(width * ratio)
+    const pixelHeight = Math.round(height * ratio)
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth
+      canvas.height = pixelHeight
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.clearRect(0, 0, pixelWidth, pixelHeight)
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
     const left = 44, right = width - 16, top = 16, bottom = height - 34
     const x = time => left + (time - now + 10000) / 10000 * (right - left)
