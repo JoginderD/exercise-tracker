@@ -8,8 +8,8 @@ import { exercises } from '../src/exercises.js'
 import { summariseImu } from '../src/vbt.js'
 import { SAFETY_LABELS } from '../src/safety.js'
 import { openStore } from './store.js'
-import { MAX_AUDIO_BYTES, MAX_CLIP_BYTES, ValidationError, validateAnswer, validateClip, validatePlan, validateProfile, validateQuestion,
-  validateSession, validateSignup } from './validate.js'
+import { MAX_CLIP_BYTES, MAX_RECORDING_BYTES, ValidationError, validateAnswer, validateClip, validatePlan, validateProfile, validateQuestion,
+  validateRecordedQuestion, validateSession, validateSignup } from './validate.js'
 import { parsePlanCsv } from '../src/plan.js'
 import { ATTENTION, attentionReasons } from './attention.js'
 import { GoogleError, authorizationRequest, createPendingStore, exchangeCode, googleConfigFromEnv } from './google.js'
@@ -57,14 +57,14 @@ function parseCookies(header = '') {
   return cookies
 }
 
-async function readJson(req, max = MAX_BODY_BYTES) {
+async function readJson(req) {
   // Requiring JSON blocks plain cross-site form posts, which cannot set this type.
   if (!String(req.headers['content-type']).startsWith('application/json')) throw new HttpError(415, 'Send JSON.')
   let size = 0
   const chunks = []
   for await (const chunk of req) {
     size += chunk.length
-    if (size > max) throw new HttpError(413, 'Request too large.')
+    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'Request too large.')
     chunks.push(chunk)
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
@@ -84,16 +84,24 @@ async function readBytes(req, max) {
   }
   return Buffer.concat(chunks)
 }
-function headerJson(value) {
+function headerJson(value, what = 'clip') {
   try { return JSON.parse(decodeURIComponent(String(value ?? ''))) }
-  catch { throw new HttpError(400, 'Invalid clip details.') }
+  catch { throw new HttpError(400, `Invalid ${what} details.`) }
 }
 const DAY_MS = 24 * 60 * 60 * 1000
 // A week's sessions in any time zone: the browser picks its own Monday from these.
 const WEEK_WINDOW_MS = 8 * DAY_MS
-// Base64 grows the recording by a third; the rest is the question text.
-const MAX_QUESTION_BODY = Math.ceil(MAX_AUDIO_BYTES * 4 / 3) + 64 * 1024
 const OPEN_QUESTIONS_MAX = 200
+// ?from= is the first moment of the week a calendar shows (the viewer's own Monday);
+// without it, the last week. Bounded at both ends, so an old week is never cut short by
+// the row cap on newer sessions.
+const EARLIEST_WEEK = Date.UTC(2024, 0, 1)
+function weekWindow(url) {
+  const from = url.searchParams.get('from')
+  const start = /^\d{1,15}$/.test(from ?? '') ? Number(from) : Date.now() - WEEK_WINDOW_MS
+  if (start < EARLIEST_WEEK || start > Date.now() + 366 * DAY_MS) throw new HttpError(400, 'That week is out of range.')
+  return [start, start + WEEK_WINDOW_MS]
+}
 
 function send(res, status, body, headers = {}) {
   res.writeHead(status, { 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store', ...headers })
@@ -199,6 +207,11 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
     const coach = requireUser(ctx, 'coach')
     if (patientId === null || !store.isLinked(patientId, coach.id)) throw new HttpError(404, 'Patient not found.')
     return store.userById(patientId)
+  }
+  function saveQuestion(user, question) {
+    if (!store.isLinked(user.id, question.coachId)) throw new HttpError(404, 'You are not sharing with that coach.')
+    const result = store.saveQuestion(user.id, question)
+    return [result.duplicate ? 200 : 201, result]
   }
   // The patient who asked, or the coach asked while the patient still shares with them.
   function canSeeQuestion(user, question) {
@@ -421,7 +434,7 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
     // about the last week so the page can show this week's progress against each row.
     ['GET', /^\/api\/patients\/(\d+)\/plan$/, (ctx, id) => {
       const patient = requirePatientOf(ctx, numericId(id))
-      return { plan:store.plan(patient.id, ctx.user.id), sessions:store.weekSessions(patient.id, Date.now() - WEEK_WINDOW_MS) }
+      return { plan:store.plan(patient.id, ctx.user.id), sessions:store.weekSessions(patient.id, ...weekWindow(ctx.url)) }
     }],
     ['PUT', /^\/api\/patients\/(\d+)\/plan$/, async (ctx, id) => {
       const patient = requirePatientOf(ctx, numericId(id))
@@ -446,28 +459,36 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
     }],
     ['GET', /^\/api\/plans$/, ctx => {
       const user = requireUser(ctx, 'patient')
-      return { plans:store.plansOfPatient(user.id), sessions:store.weekSessions(user.id, Date.now() - WEEK_WINDOW_MS) }
+      return { plans:store.plansOfPatient(user.id), sessions:store.weekSessions(user.id, ...weekWindow(ctx.url)) }
     }],
 
-    // Questions from a patient to one of their coaches.
+    // Questions from a patient to one of their coaches: typed (JSON), or recorded on
+    // the tracker (the body is the video, its details are in x-question-meta). Both are
+    // keyed by the client's id, so a retry stores one question.
     ['POST', /^\/api\/questions$/, async ctx => {
       const user = requireUser(ctx, 'patient')
       askByUser.take(user.id)
-      const question = validateQuestion(await readJson(ctx.req, MAX_QUESTION_BODY))
-      if (!store.isLinked(user.id, question.coachId)) throw new HttpError(404, 'You are not sharing with that coach.')
-      const result = store.saveQuestion(user.id, question)
-      return [result.duplicate ? 200 : 201, result]
+      return saveQuestion(user, validateQuestion(await readJson(ctx.req)))
+    }],
+    ['PUT', /^\/api\/questions\/([0-9a-fA-F-]{36})$/, async (ctx, clientId) => {
+      const user = requireUser(ctx, 'patient')
+      askByUser.take(user.id)
+      const meta = headerJson(ctx.req.headers['x-question-meta'], 'question')
+      // Checked before the upload is read, so a stranger to this coach cannot make the server hold 16 MB.
+      if (!Number.isInteger(meta?.coachId) || !store.isLinked(user.id, meta.coachId)) throw new HttpError(404, 'You are not sharing with that coach.')
+      return saveQuestion(user, validateRecordedQuestion({ id:clientId, type:ctx.req.headers['content-type'], meta,
+        data:await readBytes(ctx.req, MAX_RECORDING_BYTES) }))
     }],
     ['GET', /^\/api\/questions$/, ctx => store.questionsOfPatient(requireUser(ctx, 'patient').id, ...pageArgs(ctx.url))],
-    ['GET', /^\/api\/questions\/(\d+)\/audio$/, (ctx, id) => {
+    ['GET', /^\/api\/questions\/(\d+)\/recording$/, (ctx, id) => {
       const user = requireUser(ctx)
-      const audio = store.questionAudio(Number(id))
-      if (!canSeeQuestion(user, audio)) throw new HttpError(404, 'Recording not found.')
+      const recording = store.questionRecording(Number(id))
+      if (!canSeeQuestion(user, recording)) throw new HttpError(404, 'Recording not found.')
       ctx.res.writeHead(200, {
-        'content-type':audio.type, 'content-length':audio.data.length, 'cache-control':'private, no-store',
+        'content-type':recording.type, 'content-length':recording.data.length, 'cache-control':'private, no-store',
         'x-content-type-options':'nosniff', 'content-disposition':'inline',
       })
-      ctx.res.end(audio.data)
+      ctx.res.end(recording.data)
     }],
     ['POST', /^\/api\/questions\/(\d+)\/answer$/, async (ctx, id) => {
       const coach = requireUser(ctx, 'coach')
@@ -529,7 +550,7 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
     'x-content-type-options':'nosniff',
     'referrer-policy':'same-origin',
     'x-frame-options':'DENY',
-    // The microphone records spoken questions to a coach.
+    // The microphone records video questions to a coach.
     'permissions-policy':'camera=(self), bluetooth=(self), microphone=(self), geolocation=()',
   }
   async function serveStatic(req, res, url) {

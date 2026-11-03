@@ -335,6 +335,8 @@ async function linkedPair(base, tag = '') {
 }
 // The smallest bytes that pass the WebM check.
 const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(60, 1)])
+const record = (call, coachId, { type = 'video/webm;codecs=vp8,opus', data = webm, durationMs = 4200, id = randomUUID(), transcript } = {}) =>
+  call('PUT', `/api/questions/${id}`, null, { 'content-type':type, 'x-question-meta':encodeURIComponent(JSON.stringify({ coachId, durationMs, transcript })) }, data)
 
 test('questions reach only their coach, are high priority until answered, and the patient sees the reply', async () => {
   const { base, close } = await startServer()
@@ -345,19 +347,26 @@ test('questions reach only their coach, are high priority until answered, and th
     assert.equal((await coach('POST', '/api/questions', { id:randomUUID(), coachId:coachUser.id, text:'Hi' })).status, 403)
     assert.equal((await patient('POST', '/api/questions', { id:randomUUID(), coachId:coachUser.id, text:'  ' })).status, 400)
     assert.equal((await patient('POST', '/api/questions', { id:randomUUID(), coachId:other.coachUser.id, text:'Hi' })).status, 404)
-    assert.equal((await patient('POST', '/api/questions', { id:randomUUID(), coachId:coachUser.id,
-      audio:{ type:'audio/webm', data:Buffer.from('not audio').toString('base64'), durationMs:1000 } })).status, 400)
+    assert.equal((await record(patient, coachUser.id, { data:Buffer.from('not a video') })).status, 400)
+    assert.equal((await record(patient, coachUser.id, { type:'text/html' })).status, 400)
+    assert.equal((await record(patient, coachUser.id, { durationMs:10 * 60 * 1000 })).status, 400)
+    assert.equal((await record(patient, other.coachUser.id)).status, 404)
+    assert.equal((await record(patient, coachUser.id, { transcript:'x'.repeat(2001) })).status, 400)
+    assert.equal((await record(patient, coachUser.id, { transcript:42 })).status, 400)
+    assert.equal((await record(coach, coachUser.id)).status, 403)
 
-    // Typed only, and voice only; the same id twice stores one question.
+    // Typed, and recorded on video; the same id twice stores one question.
     const typed = { id:randomUUID(), coachId:coachUser.id, text:'Should my knee click on squats?' }
     assert.equal((await patient('POST', '/api/questions', typed)).status, 201)
     const repeat = await patient('POST', '/api/questions', typed)
     assert.equal(repeat.status, 200)
     assert.equal(repeat.body.duplicate, true)
-    const spoken = await patient('POST', '/api/questions', { id:randomUUID(), coachId:coachUser.id,
-      audio:{ type:'audio/webm;codecs=opus', data:webm.toString('base64'), durationMs:4200 } })
+    const videoId = randomUUID()
+    const spoken = await record(patient, coachUser.id, { id:videoId, transcript:'  Is this knee position right?  ' })
     assert.equal(spoken.status, 201)
-    assert.deepEqual(spoken.body.question.audio, { type:'audio/webm', durationMs:4200 })
+    assert.equal(spoken.body.question.text, 'Is this knee position right?')
+    assert.equal((await record(patient, coachUser.id, { id:videoId })).body.duplicate, true)
+    assert.deepEqual(spoken.body.question.recording, { type:'video/webm', durationMs:4200 })
     assert.equal(spoken.body.question.coachName, 'Coach')
 
     const roster = (await coach('GET', '/api/patients')).body.patients
@@ -365,11 +374,11 @@ test('questions reach only their coach, are high priority until answered, and th
     assert.deepEqual(roster[0].attention[0].kind, 'question')
     assert.equal(roster[0].attention[0].priority, 'high')
     const inbox = (await coach('GET', '/api/coach/questions')).body.questions
-    assert.deepEqual(inbox.map(question => question.text), ['Should my knee click on squats?', ''])
+    assert.deepEqual(inbox.map(question => question.text), ['Should my knee click on squats?', 'Is this knee position right?'])
     assert.equal(inbox[0].patientName, 'Pat')
 
     // The recording plays for the patient and their coach, and nobody else.
-    const audioPath = `/api/questions/${spoken.body.question.id}/audio`
+    const audioPath = `/api/questions/${spoken.body.question.id}/recording`
     assert.equal((await fetch(base + audioPath)).status, 401)
     assert.equal((await coach('GET', audioPath)).status, 200)
     assert.equal((await patient('GET', audioPath)).status, 200)
@@ -435,6 +444,22 @@ test('a coach uploads a CSV plan, edits it, and the patient sees it with this we
     assert.equal(seen.plans[0].coach.name, 'Coach')
     assert.equal(seen.plans[0].items[0].reps, 12)
     assert.equal(seen.sessions.length, 1)
+
+    // Days and rest are kept; times per week must match the days chosen.
+    const scheduled = [{ ...items[0], days:[0, 2, 4], perWeek:3, rest:90 }, items[1]]
+    const withDays = await coach('PUT', path, { version:2, items:scheduled })
+    assert.equal(withDays.status, 200)
+    assert.deepEqual([withDays.body.plan.items[0].days, withDays.body.plan.items[0].rest], [[0, 2, 4], 90])
+    assert.equal((await coach('PUT', path, { version:3, items:[{ ...scheduled[0], perWeek:2 }] })).status, 400)
+    assert.equal((await coach('PUT', path, { version:3, items:[{ ...scheduled[0], days:[9] }] })).status, 400)
+
+    // A calendar asks for one week; sessions outside it are left out, and nonsense weeks refused.
+    const started = Date.now() - 60 * 1000
+    assert.equal((await patient('GET', `/api/plans?from=${started - 60 * 1000}`)).body.sessions.length, 1)
+    assert.equal((await patient('GET', `/api/plans?from=${started + 60 * 60 * 1000}`)).body.sessions.length, 0)
+    assert.equal((await patient('GET', `/api/plans?from=${started - 30 * 24 * 60 * 60 * 1000}`)).body.sessions.length, 0)
+    assert.equal((await patient('GET', '/api/plans?from=5')).status, 400)
+    assert.equal((await coach('GET', `${path}?from=${started - 60 * 1000}`)).body.sessions.length, 1)
 
     // A coach the patient stopped sharing with no longer shows a plan.
     await patient('DELETE', `/api/coaches/${coachUser.id}`)

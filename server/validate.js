@@ -202,37 +202,42 @@ export function validateClip({ id, type, meta, data }, now = Date.now()) {
   }
 }
 
-// A question to a coach: typed text, a voice recording, or both. The recording arrives
-// as base64 in the JSON body, so one request stores the whole question or none of it.
+// A typed question to a coach.
 export const MAX_QUESTION_TEXT = 2000
-export const MAX_AUDIO_BYTES = 2 * 1024 * 1024
-const MAX_AUDIO_MS = 3 * 60 * 1000
-const AUDIO_TYPES = ['audio/webm', 'audio/ogg', 'audio/mp4']
-function looksLikeAudio(type, data) {
-  if (type === 'audio/mp4') return data.length > 12 && data.toString('latin1', 4, 8) === 'ftyp'
-  if (type === 'audio/ogg') return data.length > 4 && data.toString('latin1', 0, 4) === 'OggS'
-  return data.length > 4 && data.readUInt32BE(0) === 0x1a45dfa3
-}
-function audio(value) {
-  if (value === null || value === undefined) return null
-  if (typeof value !== 'object') fail('audio must be an object')
-  const type = oneOf(String(value.type ?? '').split(';')[0].trim(), AUDIO_TYPES, 'audio type')
-  if (typeof value.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.data)) fail('audio data must be base64')
-  const data = Buffer.from(value.data, 'base64')
-  if (data.length > MAX_AUDIO_BYTES) fail('The recording is too large.')
-  if (!looksLikeAudio(type, data)) fail('The recording is not a valid audio file.')
-  if (!Number.isFinite(value.durationMs) || value.durationMs <= 0 || value.durationMs > MAX_AUDIO_MS + 5000) fail('The recording is too long (3 minutes at most).')
-  return { type, data, durationMs:Math.round(value.durationMs) }
+function questionBase(body) {
+  if (typeof body.id !== 'string' || !UUID.test(body.id)) fail('id must be a UUID')
+  if (!Number.isInteger(body.coachId) || body.coachId < 1) fail('Choose a coach.')
+  return { id:body.id.toLowerCase(), coachId:body.coachId }
 }
 export function validateQuestion(body) {
   if (!body || typeof body !== 'object') fail('Body must be a JSON object')
-  if (typeof body.id !== 'string' || !UUID.test(body.id)) fail('id must be a UUID')
-  if (!Number.isInteger(body.coachId) || body.coachId < 1) fail('Choose a coach.')
   const text = typeof body.text === 'string' ? body.text.trim() : ''
+  if (!text) fail('Type a question.')
   if (text.length > MAX_QUESTION_TEXT) fail(`Questions are ${MAX_QUESTION_TEXT} characters at most.`)
-  const recording = audio(body.audio)
-  if (!text && !recording) fail('Type a question or record one.')
-  return { id:body.id.toLowerCase(), coachId:body.coachId, text, audio:recording }
+  return { ...questionBase(body), text, recording:null }
+}
+
+// A recorded question: the body is the video (with sound), its details (coach, length and
+// transcript) are in a header.
+// About 600 kbit/s, so two minutes is roughly 9 MB.
+export const MAX_RECORDING_BYTES = 16 * 1024 * 1024
+export const MAX_RECORDING_MS = 2 * 60 * 1000
+const RECORDING_TYPES = ['video/webm', 'video/mp4', 'audio/webm', 'audio/mp4', 'audio/ogg']
+function looksLikeRecording(type, data) {
+  if (type.endsWith('/mp4')) return data.length > 12 && data.toString('latin1', 4, 8) === 'ftyp'
+  if (type === 'audio/ogg') return data.length > 4 && data.toString('latin1', 0, 4) === 'OggS'
+  return data.length > 4 && data.readUInt32BE(0) === 0x1a45dfa3
+}
+export function validateRecordedQuestion({ id, type, meta, data }) {
+  if (!meta || typeof meta !== 'object') fail('question details are missing')
+  const contentType = oneOf(String(type ?? '').split(';')[0].trim(), RECORDING_TYPES, 'recording type')
+  if (data.length > MAX_RECORDING_BYTES) fail('The recording is too large.')
+  if (!looksLikeRecording(contentType, data)) fail('The recording is not a valid video file.')
+  if (!Number.isFinite(meta.durationMs) || meta.durationMs <= 0 || meta.durationMs > MAX_RECORDING_MS + 5000) fail('The recording is too long (2 minutes at most).')
+  // The automatic transcript, as the patient left it after checking; stored as the question's text.
+  const transcript = meta.transcript === undefined || meta.transcript === null ? '' : typeof meta.transcript === 'string' ? meta.transcript.trim() : fail('transcript must be text')
+  if (transcript.length > MAX_QUESTION_TEXT) fail(`The transcript is ${MAX_QUESTION_TEXT} characters at most.`)
+  return { ...questionBase({ ...meta, id }), text:transcript, recording:{ type:contentType, data, durationMs:Math.round(meta.durationMs) } }
 }
 
 export function validateAnswer(body) {
@@ -250,7 +255,8 @@ export function validatePlan(body) {
   const items = body.items.map((row, index) => {
     if (!row || typeof row !== 'object') fail(`Row ${index + 1} is not an object`)
     const exercise = row.exercise === null || row.exercise === undefined || row.exercise === '' ? null : row.exercise
-    const result = planItem({ ...row, exercise, sets:String(row.sets ?? ''), reps:String(row.reps ?? ''), perWeek:String(row.perWeek ?? '') })
+    const result = planItem({ ...row, exercise, sets:String(row.sets ?? ''), reps:String(row.reps ?? ''), perWeek:String(row.perWeek ?? ''),
+      days:Array.isArray(row.days) ? row.days : [], rest:String(row.rest ?? '') })
     return result.error ? fail(`Row ${index + 1}: ${result.error}.`) : result.item
   })
   return { items, version:body.version }

@@ -106,6 +106,7 @@ export function createOutbox(onChange) {
   let flushing = null
   const outbox = {
     pending:userId => readQueue(userId).length,
+    records:userId => readQueue(userId),
     add(userId, record) {
       const queue = readQueue(userId).filter(item => item.id !== record.id)
       queue.push(record)

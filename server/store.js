@@ -76,8 +76,9 @@ const MIGRATIONS = [
   );`,
   // A coach's exercise plan for one patient, as JSON rows (see src/plan.js). version
   // rises on every save, so an edit made from a stale copy is refused, not merged.
-  // Questions from a patient to one of their coaches, typed, spoken or both; an
-  // unanswered question puts the patient first on the coach's roster.
+  // Questions from a patient to one of their coaches, typed or recorded; an unanswered
+  // question puts the patient first on the coach's roster. The audio columns hold the
+  // recording, which is a video with sound (or, for early questions, sound alone).
   `CREATE TABLE plans (
     patient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     coach_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -144,7 +145,7 @@ export const MAX_CLIPS_PER_SESSION = 20
 // Without the recording's bytes, which are fetched one question at a time.
 const questionSummary = row => ({
   id:row.id, patientId:row.patient_id, coachId:row.coach_id, text:row.body,
-  audio:row.audio_type ? { type:row.audio_type, durationMs:row.audio_ms } : null,
+  recording:row.audio_type ? { type:row.audio_type, durationMs:row.audio_ms } : null,
   createdAt:row.created_at, answer:row.answer, answeredAt:row.answered_at,
   ...row.patient_name === undefined ? {} : { patientName:row.patient_name },
   ...row.coach_name === undefined ? {} : { coachName:row.coach_name },
@@ -256,7 +257,7 @@ export function openStore(path = ':memory:') {
     plansOfPatient:db.prepare(`SELECT plans.items, plans.version, plans.updated_at, users.id AS coach_id, users.name AS coach_name
       FROM plans JOIN coach_links ON coach_links.patient_id = plans.patient_id AND coach_links.coach_id = plans.coach_id
       JOIN users ON users.id = plans.coach_id WHERE plans.patient_id = ? ORDER BY users.name`),
-    weekSessions:db.prepare(`SELECT exercise, started_at, reps FROM sessions WHERE user_id = ? AND started_at >= ?
+    weekSessions:db.prepare(`SELECT exercise, started_at, reps FROM sessions WHERE user_id = ? AND started_at >= ? AND started_at < ?
       ORDER BY started_at DESC LIMIT 5000`),
 
     insertQuestion:db.prepare(`INSERT INTO questions (patient_id, coach_id, client_id, body, audio, audio_type, audio_ms, created_at)
@@ -265,7 +266,7 @@ export function openStore(path = ':memory:') {
     questionById:db.prepare(`SELECT ${QUESTION_COLUMNS}, patient.name AS patient_name, coach.name AS coach_name FROM questions
       JOIN users AS patient ON patient.id = questions.patient_id JOIN users AS coach ON coach.id = questions.coach_id
       WHERE questions.id = ?`),
-    questionAudio:db.prepare('SELECT patient_id, coach_id, audio, audio_type FROM questions WHERE id = ? AND audio IS NOT NULL'),
+    questionRecording:db.prepare('SELECT patient_id, coach_id, audio, audio_type FROM questions WHERE id = ? AND audio IS NOT NULL'),
     // Newest first, paged by id, which only grows.
     questionsOfPatient:db.prepare(`SELECT ${QUESTION_COLUMNS}, users.name AS coach_name FROM questions
       JOIN users ON users.id = questions.coach_id WHERE questions.patient_id = ? AND questions.id < ? ORDER BY questions.id DESC LIMIT ?`),
@@ -454,14 +455,14 @@ export function openStore(path = ':memory:') {
     plansOfPatient(patientId) {
       return q.plansOfPatient.all(patientId).map(row => ({ ...planRow(row), coach:{ id:row.coach_id, name:row.coach_name } }))
     },
-    weekSessions(userId, since) {
-      return q.weekSessions.all(userId, since).map(row => ({ exercise:row.exercise, startedAt:row.started_at, reps:row.reps }))
+    weekSessions(userId, from, to) {
+      return q.weekSessions.all(userId, from, to).map(row => ({ exercise:row.exercise, startedAt:row.started_at, reps:row.reps }))
     },
 
     // Idempotent on the client's id, so a double-click or a retry stores one question.
     saveQuestion(patientId, question) {
-      const row = q.insertQuestion.get(patientId, question.coachId, question.id, question.text, question.audio?.data ?? null,
-        question.audio?.type ?? null, question.audio?.durationMs ?? null, Date.now())
+      const row = q.insertQuestion.get(patientId, question.coachId, question.id, question.text, question.recording?.data ?? null,
+        question.recording?.type ?? null, question.recording?.durationMs ?? null, Date.now())
       const id = row ? row.id : q.questionByClientId.get(patientId, question.id).id
       return { question:questionSummary(q.questionById.get(id)), duplicate:!row }
     },
@@ -469,8 +470,8 @@ export function openStore(path = ':memory:') {
       const row = q.questionById.get(id)
       return row ? questionSummary(row) : null
     },
-    questionAudio(id) {
-      const row = q.questionAudio.get(id)
+    questionRecording(id) {
+      const row = q.questionRecording.get(id)
       return row && { patientId:row.patient_id, coachId:row.coach_id, data:row.audio, type:row.audio_type }
     },
     questionsOfPatient(patientId, before, limit) {

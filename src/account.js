@@ -5,7 +5,7 @@ import { SAFETY_LABELS } from './safety.js'
 import { sessionTotal } from './session-record.js'
 import { h, plural, when, withPending } from './dom.js'
 import { coachInbox, patientQuestions, questionReasonText, questionsPanel } from './questions-panel.js'
-import { patientPlans, planEditor } from './plan-panel.js'
+import { patientCalendar, patientPlans, planEditor } from './plan-panel.js'
 
 const exerciseName = id => exercises.find(exercise => exercise.id === id)?.name ?? id
 const duration = ms => `${Math.floor(ms / 60000)}:${String(Math.round(ms / 1000) % 60).padStart(2, '0')}`
@@ -251,10 +251,17 @@ function sessionList(loadPage, detailOptions = {}) {
   return h('div', {}, table, message, more)
 }
 
-export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTracker }) {
+// onCoaches(coaches): the coaches a signed-in patient shares with, whenever that changes
+// (empty when signed out or not a patient), for the tracker's "Ask your coach" box.
+// For the tracker's plan guide: onUser(user, queued) on every sign-in and sign-out, with the
+// sessions still waiting to upload; onOutbox(event) for each session queued, saved or
+// refused; onShowTracker() when the tracker comes back into view.
+export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTracker, onCoaches = () => {},
+  onUser = () => {}, onOutbox = () => {}, onShowTracker = () => {} }) {
   let user
   let accountState = 'loading'
   let sharedWith = []
+  const setSharedWith = coaches => { sharedWith = coaches; onCoaches(coaches) }
   let undo = null
   // Panels on the open page register a reload here; it runs every minute while the tab
   // is visible and when it comes back, so new questions, replies and plan edits show up
@@ -281,6 +288,7 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
     else setSaveStatus(`Not uploaded yet (${event.error.message}). ${plural(waiting, 'session')} will retry automatically.`, 'warning')
     // A saved session lets its clips upload.
     if (event.type === 'saved' && user) clipUploader.flush(user.id)
+    onOutbox(event)
   })
   const clipUploader = createClipUploader(event => {
     if (event.type === 'sent') setSaveStatus(`Sent ${plural(event.count, 'clip')} of flagged moments to your coach.`, 'within')
@@ -294,6 +302,9 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
   const routeParams = () => new URLSearchParams(location.hash.split('?')[1] ?? '')
   const go = hash => { if (route() !== hash.replace(/^#\/?/, '')) location.hash = hash; else render() }
 
+  // Dev account switcher's list, kept across bar re-renders (see devSwitcher).
+  let devUsers = null
+
   function renderBar() {
     const current = route()
     const link = (hash, text) => h('a', { href:hash, className:'nav-link', 'aria-current':current === hash.slice(1) || (hash === '#' && !current) ? 'page' : null }, text)
@@ -303,7 +314,8 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
       try { await api('POST', '/logout', {}) } catch {}
       const waiting = outbox.pending(user.id)
       user = null
-      sharedWith = []
+      setSharedWith([])
+      onUser(null, [])
       setSaveStatus(waiting ? `Signed out. ${plural(waiting, 'unsent session')} will upload next time you sign in on this device.` : 'Signed out.')
       go('#')
     })
@@ -322,32 +334,37 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
       who = `${user.name} · ${user.role === 'coach' ? 'Coach' : 'Patient'}`
       links = user.role === 'coach'
         ? [link('#patients', 'Patients'), link('#', 'Tracker'), signOut]
-        : [link('#', 'Tracker'), link('#sessions', 'My sessions'), signOut]
+        : [link('#', 'Tracker'), link('#plan', 'My plan'), link('#sessions', 'My sessions'), signOut]
     }
     if (import.meta.env.DEV && accountState === 'ready') links.push(devSwitcher())
     bar.replaceChildren(h('span', { className:'account-who' }, who), h('span', { className:'account-links' }, links))
   }
 
   // Temporary, development builds only: jump between test accounts without a password.
-  // The list reloads each time it is opened, so newly created accounts show up.
+  // The list loads when the bar renders, not when the menu opens: a native menu opened
+  // before its options arrive shows only the placeholder, so the first click did nothing.
+  // It reloads on every bar render, so newly created accounts show up after navigating.
   function devSwitcher() {
-    const placeholder = h('option', { value:'' }, 'Switch account (dev)…')
-    const select = h('select', { className:'dev-switch', 'aria-label':'Switch account (development only)' }, placeholder)
-    let loaded = false
-    const load = async () => {
-      if (loaded) return
-      loaded = true
-      try {
-        const { users } = await api('GET', '/dev/users')
-        select.replaceChildren(placeholder, ...users.map(other => h('option', { value:other.id, disabled:other.id === user?.id },
-          `${other.name} · ${other.role === 'coach' ? 'Coach' : 'Patient'} · ${other.email}`)))
-      } catch (error) {
-        loaded = false
-        setSaveStatus(`Could not list accounts: ${error.message}`, 'warning')
-      }
+    const placeholder = h('option', { value:'' }, devUsers ? 'Switch account (dev)…' : 'Loading accounts…')
+    const select = h('select', { className:'dev-switch', 'aria-label':'Switch account (development only)', disabled:!devUsers }, placeholder)
+    const fill = () => {
+      if (!devUsers) return
+      placeholder.textContent = 'Switch account (dev)…'
+      select.disabled = false
+      select.replaceChildren(placeholder, ...devUsers.map(other => h('option', { value:other.id, disabled:other.id === user?.id },
+        `${other.name} · ${other.role === 'coach' ? 'Coach' : 'Patient'} · ${other.email}`)))
     }
-    select.addEventListener('focus', load)
-    select.addEventListener('pointerdown', load)
+    fill()
+    api('GET', '/dev/users').then(({ users }) => {
+      devUsers = users
+      // Replacing options under an open menu leaves it stale, so wait until it closes.
+      if (document.activeElement === select) select.addEventListener('blur', fill, { once:true })
+      else fill()
+    }, error => {
+      if (devUsers) return
+      placeholder.textContent = 'Accounts unavailable'
+      setSaveStatus(`Could not list accounts: ${error.message}`, 'warning')
+    })
     select.addEventListener('change', async () => {
       const userId = Number(select.value)
       if (!userId) return
@@ -359,7 +376,7 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
         if (!trackerView.hidden) onLeaveTracker()
         if (user) await outbox.flush(user.id)
         const result = await api('POST', '/dev/switch', { userId })
-        sharedWith = []
+        setSharedWith([])
         await signedIn(result.user)
         setSaveStatus(`Switched to ${user.name} (${user.role}).`, 'within')
         go(user.role === 'coach' ? '#patients' : '#')
@@ -474,16 +491,14 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
     return form
   }
 
-  // onCoaches: told whenever the list of coaches changes, so the question form follows it.
-  function sharingPanel(onCoaches = () => {}) {
+  function sharingPanel() {
     const list = h('ul', { className:'item-list' })
     const message = h('p', { className:'form-message', role:'status' })
     const input = h('input', { name:'code', placeholder:'ABCDE-12345', autocomplete:'off', autocapitalize:'characters', 'aria-label':'Coach code', maxlength:20 })
     const submit = h('button', { type:'submit' }, 'Share with coach')
 
     function showCoaches(coaches) {
-      sharedWith = coaches
-      onCoaches(coaches)
+      setSharedWith(coaches)
       list.replaceChildren(...coaches.length
         ? coaches.map(coach => {
           const stop = h('button', { type:'button', className:'secondary' }, 'Stop sharing')
@@ -566,13 +581,11 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
     const waiting = outbox.pending(user.id)
     const retry = h('button', { type:'button', className:'link-button' }, 'Upload now')
     retry.addEventListener('click', () => outbox.flush(user.id).then(render))
-    const plans = patientPlans()
-    const questions = patientQuestions({ coaches:sharedWith })
-    live(plans.load, questions.load)
+    const questions = patientQuestions()
+    live(questions.load)
     return h('div', {},
-      plans.element,
       questions.element,
-      sharingPanel(questions.setCoaches),
+      sharingPanel(),
       h('section', { className:'panel' },
         h('div', { className:'panel-header' },
           h('h2', {}, 'My sessions'),
@@ -676,9 +689,10 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
       sub.textContent = page.patient.email
       return page
     })
-    const plan = planEditor(id)
+    const calendar = patientCalendar(id)
+    const plan = planEditor(id, { onSaved:calendar.load })
     const questions = questionsPanel(id)
-    live(plan.load, questions.load)
+    live(plan.load, questions.load, calendar.load)
     unsaved = plan.dirty
     return h('div', {},
       h('section', { className:'panel' },
@@ -689,6 +703,7 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
       ),
       questions.element,
       plan.element,
+      calendar.element,
       progressPanel(`/patients/${id}/progress`),
     )
   }
@@ -706,6 +721,10 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
       content = user ? null : googleSignupView()
     } else if (current === 'sessions' && user?.role === 'patient') {
       content = patientView()
+    } else if (current === 'plan' && user?.role === 'patient') {
+      const plans = patientPlans()
+      live(plans.load)
+      content = h('div', {}, plans.element)
     } else if (current === 'patients' && user?.role === 'coach') {
       // The roster's question counts follow replies sent from the inbox.
       const roster = rosterPanel()
@@ -719,6 +738,7 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
       return go('#')
     }
     if (content && !trackerView.hidden) onLeaveTracker()
+    if (!content && trackerView.hidden) onShowTracker()
     trackerView.hidden = Boolean(content)
     view.hidden = !content
     view.replaceChildren(...content ? [content] : [])
@@ -731,10 +751,11 @@ export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTrack
   async function signedIn(next) {
     user = next
     accountState = 'ready'
+    onUser(user ?? null, user?.role === 'patient' ? outbox.records(user.id) : [])
     if (user?.role === 'patient') {
-      sharedWith = await api('GET', '/coaches').then(result => result.coaches, () => [])
+      setSharedWith(await api('GET', '/coaches').then(result => result.coaches, () => []))
       flushAll(user.id)
-    }
+    } else setSharedWith([])
   }
 
   async function loadUser() {

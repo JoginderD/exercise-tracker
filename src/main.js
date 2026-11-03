@@ -1,5 +1,6 @@
 import './style.css'
 import { createAccount } from './account.js'
+import { createAskWidget } from './ask-widget.js'
 import { createAngleGraph } from './angle-graph.js'
 import { exercises } from './exercises.js'
 import { bodyTurn, createSideChooser, createTracker, createTurnGuide, hiddenJoints, measurePose } from './exercise-tracker.js'
@@ -12,6 +13,8 @@ import { createClipPlanner } from './clip-planner.js'
 import { createRecorder, recordingSupported } from './recorder.js'
 import { createRecordingsPanel } from './recordings-panel.js'
 import { saveRecording } from './device-store.js'
+import { themeSwitch } from './theme.js'
+import { createPlanGuide } from './plan-guide.js'
 import {
   PoseLandmarker,
   FilesetResolver,
@@ -31,7 +34,10 @@ document.querySelector('#app').innerHTML = `
       <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5v11M3.5 9v6M17.5 6.5v11M20.5 9v6M6.5 12h11"/></svg>
       Exercise Tracker
     </a>
-    <nav id="account-bar" class="account-bar" aria-label="Account"></nav>
+    <div class="topbar-end">
+      <nav id="account-bar" class="account-bar" aria-label="Account"></nav>
+      <span id="theme-slot"></span>
+    </div>
   </header>
   <main id="account-view" hidden></main>
   <div id="tracker-view">
@@ -42,6 +48,7 @@ document.querySelector('#app').innerHTML = `
     </div>
     <h1 id="title">Exercise Tracker</h1>
     <p id="instructions" class="instructions"></p>
+    <p id="plan-note" class="plan-note" role="status" hidden></p>
     <div class="controls">
       <button id="start" class="big-button start-button" disabled>Start</button>
       <button id="stop" class="big-button stop-button" hidden>Stop</button>
@@ -60,6 +67,7 @@ document.querySelector('#app').innerHTML = `
         <div class="hud-stats">
           <span class="hud-label">Reps</span>
           <div id="reps" class="hud-reps">0</div>
+          <p id="plan-sets" class="hud-sets" hidden></p>
           <div class="hud-details diagnostic">
             <p id="angle"></p>
             <p id="metrics"></p>
@@ -69,6 +77,7 @@ document.querySelector('#app').innerHTML = `
           </div>
         </div>
         <div class="hud-bottom">
+          <div id="plan-cue" class="plan-cue" role="status" hidden></div>
           <p id="turn" class="hud-turn" role="status" hidden></p>
           <p id="coach" class="hud-message simple-only" data-state="unassessable" role="status"></p>
         </div>
@@ -89,7 +98,7 @@ document.querySelector('#app').innerHTML = `
   <p id="save-status" class="hint save-status" role="status"></p>
 
   <div class="preferences">
-    <label class="switch"><input id="speak" type="checkbox" checked> Speak safety warnings out loud</label>
+    <label class="switch"><input id="speak" type="checkbox" checked> Speak set cues and safety warnings out loud</label>
     <label class="switch"><input id="details-toggle" type="checkbox" checked> Show details</label>
     <label class="switch"><input id="keep-recordings" type="checkbox" checked> Keep recordings on this device</label>
   </div>
@@ -161,6 +170,7 @@ document.querySelector('#app').innerHTML = `
   </div>
 `
 
+document.querySelector('#theme-slot').replaceWith(themeSwitch())
 const angleGraph = createAngleGraph(document.querySelector('#angle-graph'))
 const video = document.querySelector('#webcam')
 const canvas = document.querySelector('#overlay')
@@ -200,12 +210,27 @@ const speakToggle = document.querySelector('#speak')
 const detailsToggle = document.querySelector('#details-toggle')
 const keepRecordingsToggle = document.querySelector('#keep-recordings')
 const recordingsPanel = createRecordingsPanel(document.querySelector('#recordings'))
+// "Ask your coach" over the camera picture; it reuses the tracker's camera while it runs.
+const askWidget = createAskWidget({ stage, cameraTrack:() => stream?.getVideoTracks()[0] ?? null })
+// A signed-in patient's plan: today's exercises, sets and rests (src/plan-guide.js).
+const planGuide = createPlanGuide({
+  picker:exerciseToggles,
+  note:document.querySelector('#plan-note'),
+  setsLabel:document.querySelector('#plan-sets'),
+  panel:document.querySelector('#plan-cue'),
+  speak:text => speak(text, false, { interrupt:false }),
+  onPick:id => chooseExercise(id),
+})
 const account = createAccount({
   bar:document.querySelector('#account-bar'),
   view:document.querySelector('#account-view'),
   trackerView,
   saveStatus:document.querySelector('#save-status'),
-  onLeaveTracker:() => stopCamera(),
+  onLeaveTracker:() => { stopCamera(); askWidget.stop() },
+  onCoaches:coaches => askWidget.setCoaches(coaches),
+  onUser:(user, queued) => planGuide.setUser(user, queued),
+  onOutbox:event => planGuide.outbox(event),
+  onShowTracker:() => { planGuide.load(); chooseFromAddress() },
 })
 
 // Dumbbell sensor: connection, calibration and the live readout. Its reps are only
@@ -428,7 +453,11 @@ let fileUrl
 let cameraRequest = 0
 
 const repsLabel = document.querySelector('#reps')
-const LANE_COLORS = [['Cyan', '#22d3ee'], ['Pink', '#f472b6']]
+// Per limb: a light colour for the camera picture (always dark), and the CSS variable
+// of its line on the angle graph, which follows the page theme (src/style.css --lane-*).
+const LANE_COLORS = [['#0fb5d4', '--lane-1-ink'], ['#ec5c9e', '--lane-2-ink']]
+// Overlay colours on the camera picture, from the fixed tokens in src/style.css.
+const OVERLAY = { reference:'#dccdbd', warning:'#ffa77d', joint:'#f2b705', jointRing:'#2d2016' }
 const EMPTY = {
   reps:0, flaggedReps:0, partialReps:0, fastReps:0, slowReps:0,
   lastRep:null, waiting:true, form:'unassessable', messages:[], tempoMessage:null,
@@ -456,8 +485,8 @@ function createLanes() {
     id: side,
     side,
     current: side === 'auto' ? null : side,
-    colorName: LANE_COLORS[index][0],
-    color: LANE_COLORS[index][1],
+    color: LANE_COLORS[index][0],
+    ink: LANE_COLORS[index][1],
     tracker: createTracker(exercise),
     sideChooser: createSideChooser(exercise),
     smoother: createMetricSmoother(exercise.maxGapMs),
@@ -607,6 +636,8 @@ function renderCoach() {
     state = 'warning'
     text = 'Your lifts are slowing down. Time for a rest.'
   }
+  // Resting or finished: the plan's box says what to do, so encouragement would contradict it.
+  if ((state === 'within' || state === 'pending') && planGuide.quiet()) text = ''
   coachLabel.dataset.state = state
   setText(coachLabel, text)
 }
@@ -659,12 +690,13 @@ safetyOk.addEventListener('click', () => {
 })
 
 // Warnings are read aloud, since the person is watching their body, not the screen.
-function speak(text, urgent) {
+// Set cues wait their turn (interrupt false) rather than cut off a safety warning.
+function speak(text, urgent, { interrupt = true } = {}) {
   if (!speakToggle.checked) return
   if (urgent) beep()
   const synth = window.speechSynthesis
   if (!synth || typeof SpeechSynthesisUtterance === 'undefined') return
-  synth.cancel()
+  if (interrupt) synth.cancel()
   const utterance = new SpeechSynthesisUtterance(text)
   utterance.rate = 0.9
   synth.speak(utterance)
@@ -799,9 +831,13 @@ function resetRun() {
   safety = createSafetyMonitor(exercise)
   renderTurn(null)
   const label = exercise.labels[exercise.rep.metric]
-  angleGraph.configure(lanes.map(({ id, color }) => ({ id, color })), [exercise.rep.target, exercise.rep.start])
-  graphLegend.textContent = `${lanes.map(lane => `${lane.colorName}: ${laneName(lane)}`).join(' · ')} (smoothed) · ` +
-    `Dashed: rep thresholds (${exercise.rep.start}° / ${exercise.rep.target}°).`
+  angleGraph.configure(lanes.map(({ id, ink }) => ({ id, color:ink })), [exercise.rep.target, exercise.rep.start])
+  graphLegend.replaceChildren(...lanes.flatMap((lane, index) => {
+    const swatch = document.createElement('span')
+    swatch.className = 'legend-swatch'
+    swatch.style.background = `var(${lane.ink})`
+    return [index ? ' · ' : '', swatch, laneName(lane)]
+  }), ` (smoothed) · Dashed: rep thresholds (${exercise.rep.start}° / ${exercise.rep.target}°).`)
   graphCanvas.setAttribute('aria-label', `Live ${label.toLowerCase()} over the last ten seconds, from 0 to 180 degrees. Missing tracking leaves gaps.`)
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   lastVideoTime = -1
@@ -812,7 +848,8 @@ function resetRun() {
 function applyExercise() {
   const { labels, formRules } = exercise
   title.textContent = exercise.name
-  for (const toggle of exerciseToggles.children) toggle.setAttribute('aria-pressed', String(toggle.dataset.id === exercise.id))
+  for (const toggle of exerciseToggles.querySelectorAll('button[data-id]')) toggle.setAttribute('aria-pressed', String(toggle.dataset.id === exercise.id))
+  planGuide.select(exercise.id)
   instructions.textContent = exercise.instructions
   sideSelect.value = exercise.defaultSide
   graphTitle.textContent = `${labels[exercise.rep.metric]} · last 10 seconds`
@@ -827,16 +864,24 @@ function applyExercise() {
   resetRun()
 }
 
-exerciseToggles.addEventListener('click', event => {
-  const id = event.target.closest('button')?.dataset.id
-  if (!id || id === exercise.id) return
-  exercise = exercises.find(profile => profile.id === id)
+function chooseExercise(id) {
+  const next = exercises.find(profile => profile.id === id)
+  if (!next || next === exercise) return
+  exercise = next
   applyExercise()
-})
+}
+exerciseToggles.addEventListener('click', event => chooseExercise(event.target.closest('button')?.dataset.id))
+// "Start" on the plan calendar links to #?exercise=<id>.
+function chooseFromAddress() {
+  const params = new URLSearchParams(location.hash.split('?')[1] ?? '')
+  if (location.hash.replace(/^#\/?/, '').split('?')[0] === '' && params.has('exercise')) chooseExercise(params.get('exercise'))
+}
+window.addEventListener('hashchange', chooseFromAddress)
 sideSelect.addEventListener('change', resetRun)
 worldToggle.addEventListener('change', resetRun)
 modelSelect.addEventListener('change', () => loadModel(modelSelect.value))
 applyExercise()
+chooseFromAddress()
 
 function releaseFile() {
   if (fileUrl) URL.revokeObjectURL(fileUrl)
@@ -996,6 +1041,7 @@ startButton.addEventListener('click', async () => {
     angleGraph.clear()
     lastVideoTime = -1
     setRunning(true)
+    planGuide.start()
     syncControls()
     startRecording()
     trackPose()
@@ -1011,17 +1057,23 @@ function drawPose(lane) {
   ctx.lineWidth = 5
   for (const [from, to, kind] of exercise.connections) {
     if (!points[from] || !points[to]) continue
-    ctx.strokeStyle = kind === 'reference' ? '#94a3b8' : warning ? '#fb923c' : lane.color
+    ctx.strokeStyle = kind === 'reference' ? OVERLAY.reference : warning ? OVERLAY.warning : lane.color
+    // The reference line is dashed so it reads apart from a pale limb line by shape too.
+    ctx.setLineDash(kind === 'reference' ? [10, 8] : [])
     ctx.beginPath()
     ctx.moveTo(points[from].x, points[from].y)
     ctx.lineTo(points[to].x, points[to].y)
     ctx.stroke()
   }
+  ctx.setLineDash([])
+  ctx.fillStyle = OVERLAY.joint
+  ctx.strokeStyle = OVERLAY.jointRing
+  ctx.lineWidth = 3
   for (const point of Object.values(points)) {
-    ctx.fillStyle = '#facc15'
     ctx.beginPath()
     ctx.arc(point.x, point.y, 8, 0, Math.PI * 2)
     ctx.fill()
+    ctx.stroke()
   }
 }
 
@@ -1088,6 +1140,8 @@ function trackPose() {
       renderMeasurements()
       renderForm()
       renderRepFeedback()
+      // Reps since the run was last handed over for saving; saved ones reach the guide from the outbox.
+      if (source === 'camera') planGuide.update(lanes.reduce((sum, lane) => sum + lane.assessment.reps - (lane.saved?.reps ?? 0), 0))
       renderCoach()
 
       const tracked = lanes.filter(lane => lane.measurement)
@@ -1125,6 +1179,7 @@ function stopCamera() {
     lane.pointSmoother.reset()
   }
   setRunning(false)
+  planGuide.stop()
   safety?.reset()
   cancelAnimationFrame(animationId)
   finishRun()
@@ -1181,7 +1236,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     if (source === 'file') video.pause()
     else stopCamera()
-  }
+  } else if (!trackerView.hidden) planGuide.load()
 })
 
 renderSensor()

@@ -24,13 +24,16 @@ export function createAngleGraph(canvas) {
     const left = 44, right = width - 16, top = 16, bottom = height - 34
     const x = time => left + (time - now + 10000) / 10000 * (right - left)
     const y = angle => bottom - angle / 180 * (bottom - top)
-    ctx.font = '12px Arial'
+    // Colours come from the page theme (src/style.css); line colours are CSS variable names.
+    const css = getComputedStyle(canvas)
+    const token = name => css.getPropertyValue(name).trim()
+    ctx.font = '12px Figtree, Arial, sans-serif'
     ctx.lineWidth = 1
     ctx.textAlign = 'right'
     for (const angle of [0, 45, 90, 135, 180]) {
-      ctx.fillStyle = '#cbd5e1'
+      ctx.fillStyle = token('--text-muted')
       ctx.fillText(`${angle}°`, left - 8, y(angle) + 4)
-      ctx.strokeStyle = '#334155'
+      ctx.strokeStyle = token('--border')
       ctx.beginPath(); ctx.moveTo(left, y(angle)); ctx.lineTo(right, y(angle)); ctx.stroke()
     }
     ctx.textAlign = 'center'
@@ -38,15 +41,15 @@ export function createAngleGraph(canvas) {
       ctx.fillText(seconds === 0 ? 'Now' : `${seconds}s`, x(now + seconds * 1000), height - 10)
     }
     ctx.setLineDash([5, 5])
-    ctx.strokeStyle = '#a78bfa'
+    ctx.strokeStyle = token('--border-strong')
     for (const angle of thresholds) {
       ctx.beginPath(); ctx.moveTo(left, y(angle)); ctx.lineTo(right, y(angle)); ctx.stroke()
     }
     ctx.setLineDash([])
     ctx.lineWidth = 2
     for (const { history, color } of series) {
-      ctx.strokeStyle = color
-      ctx.fillStyle = color
+      ctx.strokeStyle = token(color)
+      ctx.fillStyle = token(color)
       for (const segment of history.segments(now)) {
         ctx.beginPath()
         segment.forEach((point, index) => {
@@ -61,9 +64,10 @@ export function createAngleGraph(canvas) {
     }
   }
   new ResizeObserver(() => draw()).observe(canvas)
+  document.addEventListener('themechange', () => draw())
   draw()
   return {
-    // lines: [{ id, color }]; values passed to add() are keyed by line id.
+    // lines: [{ id, color }], color a CSS variable name; values passed to add() are keyed by line id.
     configure(lines, angles) {
       series = lines.map(line => ({ ...line, history: createAngleHistory() }))
       thresholds = angles
