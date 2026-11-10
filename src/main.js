@@ -156,6 +156,8 @@ document.querySelector('#app').innerHTML = `
     <label>Open a local video <input id="video-file" type="file" accept="video/*" disabled></label>
     <p id="video-name" class="hint">No video selected. Files are processed locally, never uploaded.</p>
     <button id="replay" class="secondary" disabled>Replay from start</button>
+    <p class="hint"><a href="/benchmark.html">Open the pose benchmark</a> to compare Full and Lite model
+    measurements on a local clip.</p>
   </section>
 
   <section class="card angle-chart" aria-labelledby="graph-title">
