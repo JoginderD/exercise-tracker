@@ -1,0 +1,26 @@
+/* Curl Guard panel. Colours reuse the site's theme variables, with fallbacks. */
+.guard-panel .guard-status { margin: -4px 0 12px; }
+.guard-alarm {
+  margin: 0 0 12px;
+  padding: 0.5em 1em;
+  border: 2px solid var(--text-muted, #888);
+  border-radius: 8px;
+  text-align: center;
+  font-weight: 600;
+}
+.guard-alarm:empty { display: none; }
+.guard-alarm[data-state="ok"] { border-color: var(--done, #2e9e5b); }
+.guard-alarm[data-state="warning"] {
+  color: var(--urgent-text, #7a1f0a);
+  background: var(--urgent-soft, #fde8e0);
+  border-color: var(--urgent, #d9480f);
+}
+.guard-readout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+.guard-readout div { display: flex; flex-direction: column; }
+.guard-readout dt { color: var(--text-muted, #666); font-size: 13px; }
+.guard-readout dd { margin: 0; font-size: 18px; font-variant-numeric: tabular-nums; }
