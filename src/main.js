@@ -7,6 +7,7 @@ import { bodyTurn, createSideChooser, createTracker, createTurnGuide, hiddenJoin
 import { buildSessionRecord, newRunId } from './session-record.js'
 import { createMetricSmoother, createPointSmoother } from './smoothing.js'
 import { COMMANDS, bluetoothUnavailable, createImuLink } from './imu.js'
+import { createGuardPanel } from './guard-panel.js'
 import { createVbt } from './vbt.js'
 import { SAFETY_LABELS, bodyFrame, createSafetyMonitor } from './safety.js'
 import { createClipPlanner } from './clip-planner.js'
@@ -150,6 +151,8 @@ document.querySelector('#app').innerHTML = `
     <p class="hint">While the camera runs, the sensor measures lifting speed, range and power for each rep.
     A speed drop of more than ${LOSS_THRESHOLD}% from the fastest rep is a sign of fatigue. Enter the weight to get power.</p>
   </section>
+
+    <section class="card settings guard-panel" id="guard-panel" aria-labelledby="guard-title"></section>
 
   <section class="card video-input" aria-labelledby="video-title">
     <h2 id="video-title">Test video</h2>
@@ -442,6 +445,8 @@ function sensorSettingsChanged() {
 }
 sensorMassInput.addEventListener('change', sensorSettingsChanged)
 sensorHand.addEventListener('change', sensorSettingsChanged)
+// Curl guard: a second Bluetooth device, independent of the dumbbell sensor above.
+createGuardPanel(document.querySelector('#guard-panel'))
 
 let model
 let vision
