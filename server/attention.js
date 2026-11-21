@@ -1,5 +1,7 @@
-// Why a patient on a coach's roster may need a look. Returned as data, not text,
-// so the page words and dates it in the coach's own locale.
+// Determines which patients on a coach's roster may need attention.
+// Checks unanswered questions, safety alerts, flagged exercise repetitions,
+// and inactivity based on recent workout sessions.
+
 const DAY = 24 * 60 * 60 * 1000
 export const ATTENTION = {
   recentDays:7,
@@ -13,15 +15,14 @@ export const ATTENTION = {
   highShare:0.5,
 }
 
+// Calculates the proportion of exercise repetitions that were flagged.
 const share = sessions => {
   const reps = sessions.reduce((sum, session) => sum + session.reps, 0)
   const flagged = sessions.reduce((sum, session) => sum + session.flaggedReps, 0)
   return { reps, value:reps ? flagged / reps : 0 }
 }
 
-// patient: { linkedAt, lastSessionAt, openQuestions? }. sessions: that patient's sessions
-// since now - (recentDays + priorDays), any order. Unanswered questions come first: they
-// are the patient asking for the coach directly.
+// Reviews a patient's activity and returns reasons they may need attention from their coach.
 export function attentionReasons(patient, sessions, now = Date.now(), rules = ATTENTION) {
   const reasons = []
   if (patient.openQuestions?.count) {

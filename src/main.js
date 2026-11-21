@@ -1,3 +1,6 @@
+// Initializes the exercise tracker and connects the camera,
+// MediaPipe pose detection, exercise feedback, and session recording.
+
 import './style.css'
 import { createAccount } from './account.js'
 import { createAskWidget } from './ask-widget.js'

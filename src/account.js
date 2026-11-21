@@ -1,3 +1,6 @@
+// Manages the frontend account interface, workout history,
+// coach-patient sharing, session uploads, and dashboard views.
+
 import { api, createClipUploader, createOutbox, fetchBlob } from './api.js'
 import { progressCharts } from './progress.js'
 import { exercises } from './exercises.js'
@@ -10,7 +13,8 @@ import { patientCalendar, patientPlans, planEditor } from './plan-panel.js'
 const exerciseName = id => exercises.find(exercise => exercise.id === id)?.name ?? id
 const duration = ms => `${Math.floor(ms / 60000)}:${String(Math.round(ms / 1000) % 60).padStart(2, '0')}`
 const secondsText = ms => Number.isFinite(ms) ? `${(ms / 1000).toFixed(1)} s` : '—'
-// "8 reps", "8 reps, 8 sensor lifts", or "5 sensor lifts" when the camera counted none.
+
+// Formats repetition counts from the session and connected sensor.
 function repsText(record) {
   const reps = sessionTotal(record)
   const lifts = record.imu?.reps.length ?? 0
@@ -18,7 +22,7 @@ function repsText(record) {
   return reps ? `${plural(reps, 'rep')}, ${plural(lifts, 'sensor lift')}` : plural(lifts, 'sensor lift')
 }
 
-// What the server's Google redirect (#signin?google=…) means for the person.
+// Stores messages displayed after different Google sign-in outcomes.
 const GOOGLE_MESSAGES = {
   cancelled:['warning', 'Google sign-in was cancelled.'],
   expired:['error', 'Google sign-in expired or was started in another tab. Try again.'],
@@ -34,6 +38,7 @@ function googleButton(text) {
   return link
 }
 
+// Formats a repetition's status, timing, and form warnings.
 function repLine(rep) {
   if (rep.kind === 'partial') {
     return `Partial (not counted)${Number.isFinite(rep.reached) ? `: reached ${rep.reached}°` : ''}${rep.messages[0] ? ` — ${rep.messages[0]}` : ''}`
@@ -45,6 +50,7 @@ function repLine(rep) {
   return parts.join(' — ')
 }
 
+// Formats sensor measurements for an individual repetition.
 function sensorRepLine(rep, threshold, sets) {
   const parts = [`${sets > 1 ? `Set ${rep.set ?? 1}, rep` : 'Rep'} ${rep.number}`, `${rep.mcv.toFixed(2)} m/s (peak ${rep.peakVelocity.toFixed(2)})`, `${Math.round(rep.romCm)} cm`,
     `lift ${secondsText(rep.concentricMs)} · lower ${secondsText(rep.eccentricMs)}`]
@@ -54,7 +60,7 @@ function sensorRepLine(rep, threshold, sets) {
   return parts.join(' — ')
 }
 
-// What the dumbbell sensor measured, if it was connected for this session.
+// Displays detailed dumbbell sensor measurements for a workout session.
 function sensorDetail(session) {
   const imu = session.imu
   const summary = session.sensor
@@ -75,7 +81,7 @@ function sensorDetail(session) {
   )
 }
 
-// Safety alerts in the order they happened, so a coach can follow up.
+// Displays safety alerts recorded during a workout session.
 function safetyDetail(session) {
   if (!session.safety?.length) return null
   const time = ms => new Date(ms).toLocaleTimeString(undefined, { timeStyle:'medium' })
@@ -88,8 +94,7 @@ function safetyDetail(session) {
 const sideName = side => side === 'auto' ? 'Auto side' : `${side[0].toUpperCase()}${side.slice(1)} side`
 const UNDO_MS = 6000
 
-// Short videos around this session's flagged moments, with one shared player.
-// owner: the patient viewing their own session, who may delete clips.
+// Displays recorded clips of flagged moments and handles playback and deletion.
 function clipsDetail(session, { owner }) {
   const clips = session.clips ?? []
   const player = h('video', { controls:true, playsinline:true, hidden:true, className:'clip-player' })
@@ -98,6 +103,7 @@ function clipsDetail(session, { owner }) {
   const labelText = clip => clip.labels.map(label =>
     `${label.lane && session.lanes.length > 1 ? `${sideName(label.lane)}, ` : ''}${label.rep ? `rep ${label.rep}: ` : ''}${label.text}`).join(' · ')
 
+  // Loads a selected clip from the server and plays it.
   function play(clip, button) {
     return withPending(button, 'Loading…', message, async () => {
       const blob = await fetchBlob(`/clips/${clip.id}`)
@@ -110,6 +116,7 @@ function clipsDetail(session, { owner }) {
     })
   }
 
+  // Deletes a clip after a short delay, allowing the patient to undo.
   function remove(clip, item) {
     item.hidden = true
     const undo = h('button', { type:'button', className:'link-button' }, 'Undo')
@@ -149,6 +156,7 @@ function clipsDetail(session, { owner }) {
   return { element, play, clipFor }
 }
 
+// Combines repetition logs, safety alerts, sensor data, and clips into session details.
 function sessionDetail(session, { owner = false } = {}) {
   const clips = clipsDetail(session, { owner })
   const repItem = (lane, rep) => {
@@ -176,7 +184,7 @@ function sessionDetail(session, { owner = false } = {}) {
   )
 }
 
-// A paged, newest-first table of sessions with expandable per-rep detail.
+// Displays workout sessions in a paginated table with expandable details.
 function sessionList(loadPage, detailOptions = {}) {
   const body = h('tbody')
   const message = h('p', { className:'form-message', role:'status' })
@@ -188,6 +196,7 @@ function sessionList(loadPage, detailOptions = {}) {
   let cursor = null
   const details = new Map()
 
+  // Adds a session row and loads its detailed results when expanded.
   function addRow(session) {
     const detailRow = h('tr', { className:'detail-row', hidden:true }, h('td', { colspan:11 }))
     const toggle = h('button', { type:'button', className:'link-button', 'aria-expanded':'false' }, 'Details')
@@ -225,6 +234,7 @@ function sessionList(loadPage, detailOptions = {}) {
     )
   }
 
+  // Fetches the next page of sessions and updates the table.
   async function load() {
     more.disabled = true
     message.dataset.state = ''
@@ -251,11 +261,7 @@ function sessionList(loadPage, detailOptions = {}) {
   return h('div', {}, table, message, more)
 }
 
-// onCoaches(coaches): the coaches a signed-in patient shares with, whenever that changes
-// (empty when signed out or not a patient), for the tracker's "Ask your coach" box.
-// For the tracker's plan guide: onUser(user, queued) on every sign-in and sign-out, with the
-// sessions still waiting to upload; onOutbox(event) for each session queued, saved or
-// refused; onShowTracker() when the tracker comes back into view.
+// Initializes the account interface and connects it to the exercise tracker.
 export function createAccount({ bar, view, trackerView, saveStatus, onLeaveTracker, onCoaches = () => {},
   onUser = () => {}, onOutbox = () => {}, onShowTracker = () => {} }) {
   let user

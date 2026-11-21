@@ -1,3 +1,6 @@
+// Stores recent joint angle measurements for the live graph.
+// Removes outdated samples and separates readings when data is missing.
+
 export function createAngleHistory(windowMs = 10000, maxGapMs = 500) {
   let samples = []
   return {

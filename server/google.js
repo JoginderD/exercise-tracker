@@ -1,16 +1,16 @@
+// Handles Google account sign-in for the exercise tracker website.
+// Creates secure authorization requests, exchanges login codes for tokens.
+// Validates Google account information before returning the user's identity.
+
 import { createHash, randomBytes } from 'node:crypto'
 
-// Google sign-in: the OpenID Connect authorization code flow with PKCE, without an SDK.
-// The ID token comes straight from Google's token endpoint over TLS, in exchange for
-// the client secret, so its claims are trusted without checking the signature
-// (OpenID Connect Core 3.1.3.7). Its audience, issuer, expiry and nonce are still checked.
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const ISSUERS = ['https://accounts.google.com', 'accounts.google.com']
 
 export class GoogleError extends Error {}
 
-// Sign-in with Google is on only when both values are set (see .env.example).
+// Sign-in with Google is on only when both values are set 
 export function googleConfigFromEnv(env = process.env) {
   if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) return null
   return { clientId:env.GOOGLE_CLIENT_ID, clientSecret:env.GOOGLE_CLIENT_SECRET, redirectUri:env.GOOGLE_REDIRECT_URI || null }

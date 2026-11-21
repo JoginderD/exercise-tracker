@@ -1,13 +1,15 @@
+// Handles communication between the frontend and backend server.
+// Manages API requests, error handling, and automatic retries for
+// workout session and video clip uploads.
+
 import { deleteVideo, getVideos, putVideo } from './device-store.js'
 
-// Thin wrapper over the server API. Errors carry the server's message and status
-// so every caller can show the user what went wrong.
-// problems: per-line reasons a CSV plan was refused (server/index.js).
+// Defines API errors with server messages, status codes, and validation details.
 export class ApiError extends Error {
   constructor(message, status, problems) { super(message); this.status = status; this.problems = problems }
 }
 
-// raw sends a Blob as the body as-is, with its own type and any extra headers.
+// Sends requests to the backend server and handles connection or response errors.
 export async function api(method, path, body, { keepalive = false, raw = null, headers = {} } = {}) {
   let response
   try {
@@ -26,13 +28,12 @@ export async function api(method, path, body, { keepalive = false, raw = null, h
   return data
 }
 
-// Finished sessions are queued per account in localStorage before upload, so a
-// failed save, a closed tab or an offline phone retries later instead of losing
-// the session. The server ignores repeats of the same id, so retrying is safe.
+// Limits the number of locally queued sessions and creates account-specific storage keys.
 const MAX_QUEUED = 200
 const memory = new Map()
 const key = userId => `exercise-tracker:outbox:${userId}`
 
+// Retrieves sessions waiting to be uploaded from local storage.
 function readQueue(userId) {
   try {
     const stored = JSON.parse(localStorage.getItem(key(userId)) ?? '[]')
@@ -46,7 +47,7 @@ function writeQueue(userId, queue) {
   try { localStorage.setItem(key(userId), JSON.stringify(queue)) } catch {}
 }
 
-// A clip's video, fetched as a Blob so it plays in every browser without range requests.
+// Downloads a video clip from the server as a Blob.
 export async function fetchBlob(path) {
   let response
   try { response = await fetch(`/api${path}`, { credentials:'same-origin' }) }

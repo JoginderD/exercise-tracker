@@ -1,3 +1,7 @@
+// Main backend server for the exercise tracker.
+// Handles user accounts, workout sessions, coach-patient connections,
+// exercise plans, questions, video clips, and HTTP requests.
+
 import { createServer } from 'node:http'
 import { createReadStream, mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -14,7 +18,9 @@ import { parsePlanCsv } from '../src/plan.js'
 import { ATTENTION, attentionReasons } from './attention.js'
 import { GoogleError, authorizationRequest, createPendingStore, exchangeCode, googleConfigFromEnv } from './google.js'
 
+// Configuration values for cookies, uploads, and pagination.
 const COOKIE = 'et_session'
+
 // Binds a Google sign-in to the browser that started it, and holds a Google identity
 // between Google's redirect and the step that finishes it (pick a role, or enter the
 // existing account's password).
@@ -26,10 +32,12 @@ const PAGE_DEFAULT = 25
 const PAGE_MAX = 100
 const exerciseNames = Object.fromEntries(exercises.map(exercise => [exercise.id, exercise.name]))
 
+// Represents an HTTP error with a status code and message.
 class HttpError extends Error {
   constructor(status, message, details = {}) { super(message); this.status = status; this.details = details }
 }
 
+// Limits how many requests can be made within a certain time period.
 // Fixed-window counters held in memory: fine for one server process. Behind
 // several processes, move these to a shared store.
 export function createLimiter(max, windowMs) {
@@ -48,6 +56,7 @@ export function createLimiter(max, windowMs) {
   }
 }
 
+// Extracts cookies from an incoming HTTP request.
 function parseCookies(header = '') {
   const cookies = {}
   for (const part of header.split(';')) {
@@ -57,9 +66,12 @@ function parseCookies(header = '') {
   return cookies
 }
 
+// Reads JSON data sent by the frontend and checks its size.
 async function readJson(req) {
+
   // Requiring JSON blocks plain cross-site form posts, which cannot set this type.
   if (!String(req.headers['content-type']).startsWith('application/json')) throw new HttpError(415, 'Send JSON.')
+
   let size = 0
   const chunks = []
   for await (const chunk of req) {
@@ -71,6 +83,7 @@ async function readJson(req) {
   catch { throw new HttpError(400, 'Invalid JSON.') }
 }
 
+// Reads raw uploaded files and prevents oversized uploads.
 // Raw uploads (clips). The type is checked by the caller: video types, like JSON,
 // cannot be sent by a plain cross-site form.
 async function readBytes(req, max) {
@@ -84,18 +97,21 @@ async function readBytes(req, max) {
   }
   return Buffer.concat(chunks)
 }
+
+// Converts JSON metadata from an HTTP header into an object.
 function headerJson(value, what = 'clip') {
   try { return JSON.parse(decodeURIComponent(String(value ?? ''))) }
   catch { throw new HttpError(400, `Invalid ${what} details.`) }
 }
+
+// Configuration for weekly sessions and questions.
 const DAY_MS = 24 * 60 * 60 * 1000
 // A week's sessions in any time zone: the browser picks its own Monday from these.
 const WEEK_WINDOW_MS = 8 * DAY_MS
 const OPEN_QUESTIONS_MAX = 200
-// ?from= is the first moment of the week a calendar shows (the viewer's own Monday);
-// without it, the last week. Bounded at both ends, so an old week is never cut short by
-// the row cap on newer sessions.
 const EARLIEST_WEEK = Date.UTC(2024, 0, 1)
+
+// Determines the date range used to retrieve weekly workout sessions.
 function weekWindow(url) {
   const from = url.searchParams.get('from')
   const start = /^\d{1,15}$/.test(from ?? '') ? Number(from) : Date.now() - WEEK_WINDOW_MS
@@ -103,21 +119,26 @@ function weekWindow(url) {
   return [start, start + WEEK_WINDOW_MS]
 }
 
+// Sends a JSON response from the backend to the frontend.
 function send(res, status, body, headers = {}) {
   res.writeHead(status, { 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store', ...headers })
   res.end(JSON.stringify(body))
 }
 
-// Spreadsheet apps run cells starting with these characters as formulas.
+// Formats values safely for CSV files, preventing spreadsheet formula execution.
 const csvCell = value => {
   let text = value === null || value === undefined ? '' : String(value)
   if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
+
+// Defines the column headings for exported workout data.
 const CSV_HEADER = ['started_at', 'exercise', 'source', 'side', 'angles', 'duration_s', 'reps', 'flagged_reps',
   'partial_reps', 'too_fast_reps', 'too_slow_reps', 'avg_lift_s', 'avg_lower_s', 'safety_alerts',
   'sensor_reps', 'sensor_hand', 'load_kg', 'best_velocity_m_s', 'mean_velocity_m_s', 'final_velocity_loss_pct',
   'peak_power_w', 'total_work_j']
+
+// Extracts and summarizes IMU sensor data for a CSV row.
 function sensorCells(row) {
   const imu = row.imu ? JSON.parse(row.imu) : null
   const summary = summariseImu(imu)
@@ -125,21 +146,27 @@ function sensorCells(row) {
   return [summary.reps, imu.hand ?? '', imu.massKg ?? '', summary.bestMcv, summary.meanMcv, summary.finalLossPct,
     summary.peakPowerW ?? '', summary.totalWorkJ ?? '']
 }
-// "2 (Possible fall; Sudden drop)", or 0.
+
+// Converts recorded safety alerts into a readable summary.
 function safetyCell(row) {
   const alerts = row.safety ? JSON.parse(row.safety) : []
   return alerts.length ? `${alerts.length} (${[...new Set(alerts.map(alert => SAFETY_LABELS[alert.kind]))].join('; ')})` : 0
 }
+
+// Converts one workout session into a CSV row.
 function csvRow(row) {
   const full = JSON.parse(row.lanes).flatMap(lane => lane.history.filter(rep => rep.kind === 'full'))
   const average = key => {
     const values = full.map(rep => rep[key]).filter(Number.isFinite)
     return values.length ? (values.reduce((a, b) => a + b, 0) / values.length / 1000).toFixed(2) : ''
   }
+
   return [new Date(row.started_at).toISOString(), exerciseNames[row.exercise] ?? row.exercise, row.source, row.side,
     row.angles, ((row.ended_at - row.started_at) / 1000).toFixed(0), row.reps, row.flagged_reps, row.partial_reps,
     row.fast_reps, row.slow_reps, average('liftMs'), average('lowerMs'), safetyCell(row), ...sensorCells(row)].map(csvCell).join(',')
 }
+
+// Sends workout session data as a downloadable CSV file.
 function sendCsv(res, rows, filename) {
   res.writeHead(200, {
     'content-type':'text/csv; charset=utf-8',
@@ -151,21 +178,25 @@ function sendCsv(res, rows, filename) {
   res.end()
 }
 
+// Reads pagination settings to limit how many records are returned.
 function pageArgs(url) {
   const limit = Number(url.searchParams.get('limit'))
   return [url.searchParams.get('before'), Number.isInteger(limit) && limit > 0 ? Math.min(limit, PAGE_MAX) : PAGE_DEFAULT]
 }
+
+// Checks whether a value is a valid numeric ID.
 const numericId = value => /^\d{1,15}$/.test(value) ? Number(value) : null
 
+// Redirects the browser to another page.
 function redirect(res, location, cookies = []) {
   res.writeHead(302, { location, 'cache-control':'no-store', 'set-cookie':cookies })
   res.end()
 }
 
-// google: { clientId, clientSecret, redirectUri? } turns on Sign in with Google (see google.js).
-// devSwitch adds password-free account switching for testing. It lets anyone sign in
-// as anyone, so it must never be on in production.
+// Creates the backend application, including security checks and API routes.
 export function createApp({ store, staticDir, secureCookies = false, google = null, devSwitch = false } = {}) {
+
+  // Limits requests for login, signup, sessions, uploads, and other operations.
   const loginByIp = createLimiter(30, 15 * 60 * 1000)
   const loginByEmail = createLimiter(10, 15 * 60 * 1000)
   const signupByIp = createLimiter(10, 60 * 60 * 1000)
@@ -178,18 +209,20 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
   const googleFlows = createPendingStore(GOOGLE_TTL_S * 1000)
   const googlePending = createPendingStore(GOOGLE_TTL_S * 1000)
 
+  // Creates cookies used to manage browser login sessions.
   const setCookie = (name, value, maxAge, path = '/') =>
     `${name}=${value}; Path=${path}; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secureCookies ? '; Secure' : ''}`
   const cookie = (value, maxAge) => setCookie(COOKIE, value, maxAge)
   const clearPending = setCookie(GOOGLE_PENDING, '', 0, '/api')
 
-  // Replaces whatever session this browser had, so an old token does not stay valid.
+  // Starts a new login session and replaces the previous session.
   function signIn(ctx, userId) {
     store.endSession(ctx.token)
     const session = store.startSession(userId)
     return cookie(session.token, session.maxAge)
   }
-  // Google redirects the browser here, so this must match a URI registered for the client.
+
+  // Builds the callback URL used after Google sign-in.
   function googleRedirectUri(req) {
     if (google.redirectUri) return google.redirectUri
     const first = value => String(value ?? '').split(',')[0].trim()
@@ -197,29 +230,34 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
     return `${proto}://${first(req.headers['x-forwarded-host']) || req.headers.host}/api/auth/google/callback`
   }
 
+  // Checks whether the user is signed in and has the required role.
   function requireUser(ctx, role) {
     if (!ctx.user) throw new HttpError(401, 'Please sign in.')
     if (role && ctx.user.role !== role) throw new HttpError(403, `Only ${role} accounts can do this.`)
     return ctx.user
   }
-  // A coach may read a patient's data only while that patient shares with them.
+
+  // Allows coaches to access only patients connected to them.
   function requirePatientOf(ctx, patientId) {
     const coach = requireUser(ctx, 'coach')
     if (patientId === null || !store.isLinked(patientId, coach.id)) throw new HttpError(404, 'Patient not found.')
     return store.userById(patientId)
   }
+
+  // Saves a patient's question after checking their coach connection.
   function saveQuestion(user, question) {
     if (!store.isLinked(user.id, question.coachId)) throw new HttpError(404, 'You are not sharing with that coach.')
     const result = store.saveQuestion(user.id, question)
     return [result.duplicate ? 200 : 201, result]
   }
-  // The patient who asked, or the coach asked while the patient still shares with them.
+
+  // Checks whether a patient or coach can view a question.
   function canSeeQuestion(user, question) {
     return question && (question.patientId === user.id ||
       (user.role === 'coach' && question.coachId === user.id && store.isLinked(question.patientId, user.id)))
   }
 
-  // One-use, short-lived undo tokens for "stop sharing", kept in memory.
+  // Creates temporary tokens for restoring a removed coach connection.
   const restoreTokens = (() => {
     const tokens = new Map()
     return {
@@ -237,8 +275,13 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
     }
   })()
 
+  // Defines the API endpoints for accounts, sessions, clips, and other features.
   const routes = [
+
+    // Returns the currently signed-in user.
     ['GET', /^\/api\/me$/, ctx => ({ user:ctx.user, google:Boolean(google) })],
+
+    // Creates a new user account.
     ['POST', /^\/api\/signup$/, async ctx => {
       signupByIp.take(ctx.ip)
       const input = validateSignup(await readJson(ctx.req))
@@ -246,6 +289,8 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       if (!user) throw new HttpError(409, 'An account with that email already exists. Sign in instead.')
       return [201, { user }, { 'set-cookie':signIn(ctx, user.id) }]
     }],
+
+    // Checks login credentials and creates a user session.
     ['POST', /^\/api\/login$/, async ctx => {
       const body = await readJson(ctx.req)
       loginByIp.take(ctx.ip)
@@ -262,6 +307,7 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       return { user, linkedGoogle, headers:{ 'set-cookie':[signIn(ctx, user.id), ...linking ? [clearPending] : []] } }
     }],
 
+    // Starts Google sign-in and redirects the browser to Google.
     ['GET', /^\/api\/auth\/google\/start$/, ctx => {
       if (!google) throw new HttpError(404, 'Sign in with Google is not set up on this server.')
       try { googleByIp.take(ctx.ip) }
@@ -272,6 +318,8 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
     }],
     // Google sends the browser back here. Every outcome redirects into the app, which
     // shows the result: signed in, finish signing up, enter your password, or an error.
+
+    // Processes Google's response and determines the next sign-in step.
     ['GET', /^\/api\/auth\/google\/callback$/, async ctx => {
       const done = (hash, cookies = []) => redirect(ctx.res, `/#${hash}`, [setCookie(GOOGLE_STATE, '', 0, '/api/auth/google'), ...cookies])
       const params = ctx.url.searchParams
@@ -295,11 +343,14 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       const token = googlePending.put({ kind:existing ? 'link' : 'signup', ...identity })
       return done(existing ? 'signin?google=link' : 'google-signup', [setCookie(GOOGLE_PENDING, token, GOOGLE_TTL_S, '/api')])
     }],
+
+    // Retrieves information about a pending Google sign-in.
     ['GET', /^\/api\/auth\/google\/pending$/, ctx => {
       const pending = googlePending.peek(ctx.cookies[GOOGLE_PENDING])
       return { pending:pending && { kind:pending.kind, email:pending.email, name:pending.name } }
     }],
-    // A new Google user picks a name and role; the email and Google id come from the pending sign-in.
+
+    // Completes registration for a new Google account.
     ['POST', /^\/api\/auth\/google\/complete$/, async ctx => {
       signupByIp.take(ctx.ip)
       const profile = validateProfile(await readJson(ctx.req))
@@ -311,22 +362,31 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       googlePending.take(pendingToken)
       return [201, { user }, { 'set-cookie':[signIn(ctx, user.id), clearPending] }]
     }],
+
+    // Ends the user's session and clears their login cookie.
     ['POST', /^\/api\/logout$/, ctx => {
       store.endSession(ctx.token)
       return { ok:true, headers:{ 'set-cookie':cookie('', 0) } }
     }],
 
+    // Saves a patient's workout session after validating the submitted data.
     ['POST', /^\/api\/sessions$/, async ctx => {
       const user = requireUser(ctx, 'patient')
       saveByUser.take(user.id)
       const result = store.saveSession(user.id, validateSession(await readJson(ctx.req)))
       return [result.duplicate ? 200 : 201, result]
     }],
+
+    // Retrieves workout sessions belonging to the signed-in patient.
     ['GET', /^\/api\/sessions$/, ctx => store.listSessions(requireUser(ctx, 'patient').id, ...pageArgs(ctx.url))],
+
+    // Exports the patient's workout history as a CSV file.
     ['GET', /^\/api\/sessions\.csv$/, ctx => {
       const user = requireUser(ctx, 'patient')
       sendCsv(ctx.res, store.iterateSessions(user.id), 'my-exercise-sessions.csv')
     }],
+
+    // Retrieves a specific session and checks whether the user can access it.
     ['GET', /^\/api\/sessions\/(\d+)$/, (ctx, id) => {
       const user = requireUser(ctx)
       const session = store.getSession(Number(id))
@@ -338,8 +398,7 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       return { session:rest }
     }],
 
-    // Clips of flagged moments: the body is the video, its details are in x-clip-meta.
-    // Keyed by the session's and the clip's client ids, so retries store one clip.
+    // Uploads video clips associated with a patient's workout session.
     ['PUT', /^\/api\/sessions\/([0-9a-fA-F-]{36})\/clips\/([0-9a-fA-F-]{36})$/, async (ctx, sessionId, clipId) => {
       const user = requireUser(ctx, 'patient')
       if (!user.shareClips) throw new HttpError(403, 'Clip sharing is off.')
@@ -352,6 +411,8 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       if (result === 'full') throw new HttpError(422, 'This session already has its maximum number of clips.')
       return [result.duplicate ? 200 : 201, result]
     }],
+
+    // Returns a video clip if the patient or linked coach has permission.
     ['GET', /^\/api\/clips\/(\d+)$/, (ctx, id) => {
       const user = requireUser(ctx)
       const clip = store.getClip(Number(id))
@@ -364,21 +425,28 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       })
       ctx.res.end(clip.data)
     }],
+
+    // Deletes a video clip belonging to the patient.
     ['DELETE', /^\/api\/clips\/(\d+)$/, (ctx, id) => {
       const user = requireUser(ctx, 'patient')
       if (!store.deleteClip(Number(id), user.id)) throw new HttpError(404, 'Clip not found.')
       return { ok:true }
     }],
+
+    // Allows patients to enable or disable video clip sharing.
     ['PUT', /^\/api\/me\/share-clips$/, async ctx => {
       const user = requireUser(ctx, 'patient')
       const { on } = await readJson(ctx.req)
       if (typeof on !== 'boolean') throw new HttpError(400, 'on must be true or false.')
       return { user:store.setShareClips(user.id, on) }
     }],
-    // Weekly progress is bucketed in the browser, in the viewer's own time zone.
+
+    // Retrieves recent workout data used to display patient progress.
     ['GET', /^\/api\/progress$/, ctx => ({ sessions:store.progress(requireUser(ctx, 'patient').id, Date.now() - 12 * 7 * DAY_MS) })],
 
+    // Retrieves all coaches connected to the signed-in patient.
     ['GET', /^\/api\/coaches$/, ctx => ({ coaches:store.coachesOf(requireUser(ctx, 'patient').id) })],
+
     ['POST', /^\/api\/coaches$/, async ctx => {
       const user = requireUser(ctx, 'patient')
       linkByUser.take(user.id)
@@ -436,6 +504,7 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       const patient = requirePatientOf(ctx, numericId(id))
       return { plan:store.plan(patient.id, ctx.user.id), sessions:store.weekSessions(patient.id, ...weekWindow(ctx.url)) }
     }],
+    
     ['PUT', /^\/api\/patients\/(\d+)\/plan$/, async (ctx, id) => {
       const patient = requirePatientOf(ctx, numericId(id))
       planByUser.take(ctx.user.id)
@@ -444,6 +513,7 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       if (!plan) throw new HttpError(409, 'This plan was changed somewhere else (another tab or device). Reload it to see the latest, then make your change again.')
       return { plan }
     }],
+
     // A CSV upload replaces the plan. The old rows come back so the page can offer undo.
     ['POST', /^\/api\/patients\/(\d+)\/plan\/csv$/, async (ctx, id) => {
       const patient = requirePatientOf(ctx, numericId(id))
@@ -470,6 +540,7 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       askByUser.take(user.id)
       return saveQuestion(user, validateQuestion(await readJson(ctx.req)))
     }],
+
     ['PUT', /^\/api\/questions\/([0-9a-fA-F-]{36})$/, async (ctx, clientId) => {
       const user = requireUser(ctx, 'patient')
       askByUser.take(user.id)
@@ -479,6 +550,7 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       return saveQuestion(user, validateRecordedQuestion({ id:clientId, type:ctx.req.headers['content-type'], meta,
         data:await readBytes(ctx.req, MAX_RECORDING_BYTES) }))
     }],
+
     ['GET', /^\/api\/questions$/, ctx => store.questionsOfPatient(requireUser(ctx, 'patient').id, ...pageArgs(ctx.url))],
     ['GET', /^\/api\/questions\/(\d+)\/recording$/, (ctx, id) => {
       const user = requireUser(ctx)
@@ -490,12 +562,14 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
       })
       ctx.res.end(recording.data)
     }],
+
     ['POST', /^\/api\/questions\/(\d+)\/answer$/, async (ctx, id) => {
       const coach = requireUser(ctx, 'coach')
       const question = store.getQuestion(Number(id))
       if (!canSeeQuestion(coach, question)) throw new HttpError(404, 'Question not found.')
       return { question:store.answerQuestion(question.id, coach.id, validateAnswer(await readJson(ctx.req))) }
     }],
+
     // Every unanswered question to this coach, oldest first.
     ['GET', /^\/api\/coach\/questions$/, ctx => {
       const coach = requireUser(ctx, 'coach')
@@ -522,10 +596,6 @@ export function createApp({ store, staticDir, secureCookies = false, google = nu
     const token = cookies[COOKIE]
     const ctx = { req, res, url, cookies, token, user:store.userForToken(token), ip:req.socket.remoteAddress }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      // Browsers always send Origin on cross-origin writes; it must name this host.
-      // Proxies (Vite in dev, nginx in production) rewrite Host and pass the
-      // original in X-Forwarded-Host, which cross-site pages cannot set without
-      // a CORS preflight that this server never approves.
       const origin = req.headers.origin
       const hosts = [req.headers.host, ...String(req.headers['x-forwarded-host'] ?? '').split(',').map(host => host.trim())]
       if (origin && !hosts.includes(new URL(origin).host)) throw new HttpError(403, 'Cross-origin request refused.')

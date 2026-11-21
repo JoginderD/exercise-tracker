@@ -1,11 +1,16 @@
+// Creates and updates a live graph of joint angles,
+// displaying movement history and exercise angle thresholds.
+
 import { createAngleHistory } from './angle-history.js'
 
+// Creates a live graph showing joint angles over time.
 export function createAngleGraph(canvas) {
   const ctx = canvas.getContext('2d')
   let thresholds = []
   let series = []
   let lastTime = 0
 
+  // Draws the graph using the latest angle measurements.
   function draw(now = lastTime) {
     lastTime = now
     const width = canvas.clientWidth || 600
@@ -66,6 +71,8 @@ export function createAngleGraph(canvas) {
   new ResizeObserver(() => draw()).observe(canvas)
   document.addEventListener('themechange', () => draw())
   draw()
+
+  // Provides functions to configure, update, and reset the graph.
   return {
     // lines: [{ id, color }], color a CSS variable name; values passed to add() are keyed by line id.
     configure(lines, angles) {

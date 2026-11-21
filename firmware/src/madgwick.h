@@ -1,26 +1,36 @@
 #pragma once
 #include <math.h>
 
-// Madgwick gradient-descent orientation filter (gyro + accelerometer, no magnetometer).
-// q rotates sensor-frame vectors into a world frame whose z axis points up; yaw is
-// unobservable without a magnetometer and drifts slowly, which vertical motion ignores.
+/*
+ * Madgwick Orientation Filter
+ *
+ * Uses gyroscope and accelerometer readings to estimate
+ * which direction the sensor is facing.
+ *
+ * This helps the exercise tracker understand movement
+ * even when the sensor is tilted or rotated.
+ */
+
 class Madgwick {
  public:
+
+  // Stores the sensor's current orientation as a quaternion.
   float q[4] = {1, 0, 0, 0};
 
-  // Levels the orientation from a still accelerometer reading (yaw set to zero).
+  // Sets the starting orientation using accelerometer readings collected while the sensor is still.
   void levelFrom(const float a[3]) {
     float norm = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
     if (norm < 0.5f) return;
     float x = a[0] / norm, y = a[1] / norm, z = a[2] / norm;
-    // Shortest rotation taking the measured up-vector (x, y, z) onto world z.
+
+    // Calculates the rotation needed to align the sensor with the vertical direction.
     float w = 1 + z;
     if (w < 1e-6f) { q[0] = 0; q[1] = 1; q[2] = 0; q[3] = 0; return; }
     float n = sqrtf(w * w + y * y + x * x);
     q[0] = w / n; q[1] = y / n; q[2] = -x / n; q[3] = 0;
   }
 
-  // gyro in rad/s, accel in any unit, dt in seconds. beta trades gyro trust for accel trust.
+  // Updates the sensor's orientation using gyroscope and accelerometer measurements. beta controls how strongly accelerometer data is used.
   void update(const float g[3], const float a[3], float dt, float beta) {
     float q0 = q[0], q1 = q[1], q2 = q[2], q3 = q[3];
     float qDot0 = 0.5f * (-q1 * g[0] - q2 * g[1] - q3 * g[2]);
@@ -31,6 +41,7 @@ class Madgwick {
     float norm = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
     if (norm > 1e-6f && beta > 0) {
       float ax = a[0] / norm, ay = a[1] / norm, az = a[2] / norm;
+      
       // Gradient of the error between measured and predicted gravity direction.
       float f0 = 2 * (q1 * q3 - q0 * q2) - ax;
       float f1 = 2 * (q0 * q1 + q2 * q3) - ay;
@@ -47,12 +58,17 @@ class Madgwick {
         qDot3 -= beta * s3 / sn;
       }
     }
+
+    // Updates the orientation using the elapsed time.
     q0 += qDot0 * dt; q1 += qDot1 * dt; q2 += qDot2 * dt; q3 += qDot3 * dt;
+
+    // Keeps the quaternion normalized for accurate rotations.
     float qn = sqrtf(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
     q[0] = q0 / qn; q[1] = q1 / qn; q[2] = q2 / qn; q[3] = q3 / qn;
   }
 
-  // Rotates a sensor-frame vector into the world frame.
+  // Converts measurements from the sensor's coordinate system
+  // to a fixed coordinate system where the Z-axis points upward.
   void toWorld(const float v[3], float out[3]) const {
     float q0 = q[0], q1 = q[1], q2 = q[2], q3 = q[3];
     out[0] = (1 - 2 * (q2 * q2 + q3 * q3)) * v[0] + 2 * (q1 * q2 - q0 * q3) * v[1] + 2 * (q1 * q3 + q0 * q2) * v[2];
