@@ -449,7 +449,7 @@ function sensorSettingsChanged() {
 sensorMassInput.addEventListener('change', sensorSettingsChanged)
 sensorHand.addEventListener('change', sensorSettingsChanged)
 // Curl guard: a second Bluetooth device, independent of the dumbbell sensor above.
-createGuardPanel(document.querySelector('#guard-panel'))
+const guardPanel = createGuardPanel(document.querySelector('#guard-panel'))
 
 let model
 let vision
@@ -1145,6 +1145,8 @@ function trackPose() {
         run.endedAt = Date.now()
       }
       angleGraph.add(now, Object.fromEntries(lanes.map(lane => [lane.id, lane.metrics?.[exercise.rep.metric]])))
+            // Curl guard cross-check: the camera's angle and rep count, on the same clock as the sensor.
+      if (source === 'camera') guardPanel.camera(now, lanes.map(lane => ({ angle: lane.metrics?.[exercise.rep.metric] ?? null, reps: lane.assessment.reps })))
       const limbs = Object.fromEntries(lanes.map(lane => [`${lane.id}:${lane.current}`, lane.metrics?.[exercise.rep.metric] ?? null]))
       for (const alert of safety.update({ body:bodyFrame(result.landmarks[0], canvas.width, canvas.height), limbs }, now)) showSafety(alert)
       renderMeasurements()
