@@ -57,3 +57,10 @@
 .guard-panel .guard-reps { margin: 0; padding-left: 1.4em; font-size: 14px; }
 .guard-panel .guard-reps[hidden] { display: none; }
 .guard-panel .guard-reps li[data-state="warning"] { color: var(--urgent-text, #7a1f0a); font-weight: 600; }
+
+/* The sound buttons may need two rows on a narrow screen. */
+.guard-panel .guard-sound { flex-wrap: wrap; }
+
+/* The teammate's "Dumbbell sensor" card is hidden because the Curl guard card replaces it.
+   Delete this rule to bring that card back. */
+.sensor-panel { display: none !important; }

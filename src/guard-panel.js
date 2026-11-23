@@ -20,6 +20,8 @@ export function createGuardPanel(root, { onPacket } = {}) {
     <div class="button-row guard-sound">
       <label><input type="checkbox" class="guard-sound-on" checked> Alarm sound</label>
       <button type="button" class="guard-sound-test">Test sound</button>
+      <button type="button" class="guard-sound-test-drop">Test drop sound</button>
+      <span class="guard-sound-source hint"></span>
     </div>
     <dl class="guard-readout">
       <div><dt>Battery</dt><dd class="guard-battery">–</dd></div>
@@ -31,7 +33,8 @@ export function createGuardPanel(root, { onPacket } = {}) {
     <h3 class="guard-reps-title">Sensor data for each rep the camera counts</h3>
     <ol class="guard-reps"></ol>
     <p class="hint">A small sensor on the dumbbell. It flags a curl that is too fast or a dumbbell that is dropped
-    and reports its battery level. This page shows the alarm and plays a warning sound when a curl is too fast.</p>`
+    and reports its battery level. This page shows the alarm and plays a warning sound when a curl is too fast
+    or the dumbbell is dropped.</p>`
 
   const $ = selector => root.querySelector(selector)
   const statusEl = $('.guard-status')
@@ -45,6 +48,8 @@ export function createGuardPanel(root, { onPacket } = {}) {
   const repsEl = $('.guard-reps')
   const soundOn = $('.guard-sound-on')
   const soundTest = $('.guard-sound-test')
+  const soundTestDrop = $('.guard-sound-test-drop')
+  const soundSourceEl = $('.guard-sound-source')
 
   const sound = createAlarmSound()
   const health = createGuardHealth()
@@ -145,7 +150,9 @@ export function createGuardPanel(root, { onPacket } = {}) {
       guard.packet = packet
       fusion.imu(packet, performance.now())  // same clock as the camera frames
       guard.count++
-      if (packet.fast) sound.play()  // beeps; ignored while muted or if another alarm just sounded
+      // A drop has its own sound. If a drop and a fast curl arrive together, only the drop is heard.
+      if (packet.drop) sound.playDrop()
+      else if (packet.fast) sound.play()  // chime; ignored while muted or if another alarm just sounded
       if (packet.fast || packet.drop) {
         guard.alarm = [packet.fast && 'Too fast', packet.drop && 'Drop detected'].filter(Boolean).join(' + ')
         guard.alarmAt = Date.now()
@@ -159,6 +166,10 @@ export function createGuardPanel(root, { onPacket } = {}) {
     sound.unlock()
     sound.play()
   })
+  soundTestDrop.addEventListener('click', () => {
+    sound.unlock()
+    sound.playDrop()
+  })
 
   // Text for one rep line: what the sensor felt while the camera counted that rep.
   function repText(rep) {
@@ -169,6 +180,8 @@ export function createGuardPanel(root, { onPacket } = {}) {
 
   // Camera/sensor cross-check line and the per-rep list.
   function renderFusion() {
+    // Which drop sound is in use: the file's name, or the built-in whistle.
+    soundSourceEl.textContent = sound.dropSource === 'not loaded yet' ? '' : `Drop sound: ${sound.dropSource}`
     const check = fusion.check(performance.now())
     checkEl.textContent = `Camera and sensor: ${check.message}`
     checkEl.dataset.state = check.state === 'agree' ? 'ok' : check.state.endsWith('-still') ? 'warning' : ''
